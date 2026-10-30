@@ -45,6 +45,7 @@ def serialize_task(task: AgentTask) -> dict[str, Any]:
         "error_message": task.error_message,
         "final_url": task.final_url,
         "step_count": task.step_count,
+        "cancel_requested": task.cancel_requested,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "finished_at": task.finished_at.isoformat() if task.finished_at else None,
         "pending_confirmation": None,
