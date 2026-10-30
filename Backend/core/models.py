@@ -283,7 +283,7 @@ class PageState(BaseModel):
         blank=True,
         related_name="page_states",
     )
-    url = models.URLField(max_length=2048)
+    url = models.CharField(max_length=2048)
     title = models.TextField(blank=True)
     state_hash = models.CharField(max_length=64, db_index=True)
     screenshot_ref = models.CharField(max_length=512, blank=True)
@@ -298,6 +298,15 @@ class PageState(BaseModel):
 
     def __str__(self) -> str:
         return f"PageState {self.state_hash[:8]} on Task {self.task_id}"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.action_id and self.task_id and self.action.task_id != self.task_id:
+            raise ValidationError("PageState action must belong to the same task.")
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class ConfirmationRequest(BaseModel):
@@ -329,6 +338,15 @@ class ConfirmationRequest(BaseModel):
 
     def __str__(self) -> str:
         return f"Confirmation for Action {self.action_id} ({self.status})"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.action_id and self.task_id and self.action.task_id != self.task_id:
+            raise ValidationError("ConfirmationRequest action must belong to the same task.")
+
+    def save(self, *args, **kwargs) -> None:
+        self.full_clean()
+        super().save(*args, **kwargs)
 
     def is_valid_approval(self, token: str) -> bool:
         """Validate whether the supplied token represents a valid pending approval (FR-34)."""

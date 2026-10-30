@@ -241,21 +241,65 @@ def test_confirmation_approval_validation(task_a):
     assert req.is_valid_approval(valid_token) is False
 
 
+@pytest.mark.django_db
+def test_confirmation_request_action_task_mismatch_rejected(task_a, user_b):
+    """ConfirmationRequest clean() rejects action belonging to another task."""
+    profile_b = BrowserProfile.objects.create(owner=user_b, storage_key="bob-profile")
+    session_b = BrowserSession.objects.create(user=user_b, profile=profile_b, status=SessionStatus.ACTIVE)
+    task_b = AgentTask.objects.create(user=user_b, session=session_b, goal="Bob's task")
+
+    action_b = AgentAction.objects.create(
+        task=task_b,
+        sequence=1,
+        action_type=ActionType.CLICK,
+    )
+
+    with pytest.raises(ValidationError, match="same task"):
+        ConfirmationRequest.objects.create(
+            task=task_a,
+            action=action_b,
+            prompt_text="Action on another task",
+        )
+
+
 # ==============================================================================
 # PageState Tests (FR-44..48)
 # ==============================================================================
 
 @pytest.mark.django_db
 def test_page_state_creation(task_a):
-    """FR-44..48: Verify PageState captures hash and task reference."""
+    """FR-44..48: Verify PageState captures hash, non-standard URLs, and task reference."""
     ps = PageState.objects.create(
         task=task_a,
-        url="https://example.com/checkout",
-        title="Checkout Page",
+        url="about:blank",
+        title="Blank Page",
         state_hash="a" * 64,
         screenshot_ref="screenshots/task-1/step-1.png",
-        summary="A checkout form with credit card input",
+        summary="Initial blank page",
     )
     assert ps.task == task_a
+    assert ps.url == "about:blank"
     assert ps.state_hash == "a" * 64
+
+
+@pytest.mark.django_db
+def test_page_state_action_task_mismatch_rejected(task_a, user_b):
+    """PageState clean() rejects action belonging to another task."""
+    profile_b = BrowserProfile.objects.create(owner=user_b, storage_key="bob-profile")
+    session_b = BrowserSession.objects.create(user=user_b, profile=profile_b, status=SessionStatus.ACTIVE)
+    task_b = AgentTask.objects.create(user=user_b, session=session_b, goal="Bob's task")
+
+    action_b = AgentAction.objects.create(
+        task=task_b,
+        sequence=1,
+        action_type=ActionType.NAVIGATE,
+    )
+
+    with pytest.raises(ValidationError, match="same task"):
+        PageState.objects.create(
+            task=task_a,
+            action=action_b,
+            url="https://example.com",
+            state_hash="b" * 64,
+        )
 

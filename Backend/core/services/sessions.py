@@ -6,6 +6,7 @@ import uuid
 
 from django.contrib.auth.models import AbstractBaseUser, AnonymousUser
 from django.core.exceptions import PermissionDenied
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from core.enums import SessionStatus
@@ -16,6 +17,7 @@ def get_or_create_session(user: AbstractBaseUser | AnonymousUser) -> BrowserSess
     """FR-01: Retrieve an existing ACTIVE session for the user, or create a new one.
 
     Ensures a BrowserProfile owned by the user is linked to the session (FR-52..54).
+    Race-safe: wrapped in transaction.atomic(); catches IntegrityError to return existing active session.
     """
     if not user.is_authenticated:
         raise PermissionDenied("Authentication required to manage browser sessions (NFR-SEC-01).")
@@ -34,11 +36,21 @@ def get_or_create_session(user: AbstractBaseUser | AnonymousUser) -> BrowserSess
             storage_key=f"user-{user.id}-{uuid.uuid4().hex[:8]}",
         )
 
-    return BrowserSession.objects.create(
-        user=user,
-        profile=profile,
-        status=SessionStatus.ACTIVE,
-    )
+    try:
+        with transaction.atomic():
+            return BrowserSession.objects.create(
+                user=user,
+                profile=profile,
+                status=SessionStatus.ACTIVE,
+            )
+    except IntegrityError:
+        existing = BrowserSession.objects.filter(
+            user=user,
+            status=SessionStatus.ACTIVE,
+        ).first()
+        if existing:
+            return existing
+        raise
 
 
 def close_session(user: AbstractBaseUser | AnonymousUser, session_id: str | uuid.UUID) -> BrowserSession:

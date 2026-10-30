@@ -110,3 +110,17 @@ def test_user_cannot_cancel_another_users_task(user_alice, user_bob):
     with pytest.raises(PermissionDenied, match="does not own this task"):
         request_cancel(user_bob, task_alice.id)
 
+
+@pytest.mark.django_db
+def test_request_cancel_on_terminal_task(user_alice):
+    """Step 0: Cancelling a terminal task returns it unchanged without setting cancel_requested."""
+    task = create_task(user_alice, goal="Terminal task")
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.COMPLETED)
+    assert task.status == TaskStatus.COMPLETED
+    assert task.cancel_requested is False
+
+    res = request_cancel(user_alice, task.id)
+    assert res.status == TaskStatus.COMPLETED
+    assert res.cancel_requested is False
+

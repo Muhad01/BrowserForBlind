@@ -56,6 +56,10 @@ def request_cancel(
     if task.user_id != user.id:
         raise PermissionDenied("User does not own this task (NFR-SEC-01).")
 
+    # If already terminal, return unchanged without setting cancel_requested (Step 0)
+    if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+        return task
+
     task.cancel_requested = True
     if task.status == TaskStatus.PENDING:
         task.transition_to(TaskStatus.CANCELLED)
