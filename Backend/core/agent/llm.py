@@ -55,6 +55,7 @@ class LLMClient(Protocol):
         goal: str,
         history: list[HistoryItem],
         obs: PageObservation,
+        should_abort: Any = None,
     ) -> Proposal:
         """Propose the next action based on goal, action history, and page observation."""
         ...
@@ -81,6 +82,7 @@ class GeminiClient:
         goal: str,
         history: list[HistoryItem],
         obs: PageObservation,
+        should_abort: Any = None,
     ) -> Proposal:
         """Call Gemini to propose ONE action across fallback pool (NFR-SEC-07, NFR-REL-01)."""
         history_snippet = "\n".join(
@@ -114,6 +116,8 @@ class GeminiClient:
         reasons: list[str] = []
 
         for idx, model in enumerate(available_models):
+            if should_abort and should_abort():
+                raise LLMUnavailable("Task aborted by user cancellation.")
             model_failed = False
             failure_reason = ""
 
@@ -208,6 +212,7 @@ class FakeLLMClient:
         goal: str,
         history: list[HistoryItem],
         obs: PageObservation,
+        should_abort: Any = None,
     ) -> Proposal:
         self.calls.append({
             "goal": goal,
