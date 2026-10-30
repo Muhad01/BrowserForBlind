@@ -4,12 +4,12 @@ from django.contrib.auth import get_user_model
 
 from core.agent.browser import FakeBrowserGateway
 from core.agent.events import RecordingPublisher
-from core.agent.llm import FakeLLMClient, LLMUnavailable
+from core.agent.llm import FakeLLMClient, LLMUnavailable, Proposal
 from core.agent.perception import PlaceholderPerceptionAgent
 from core.agent.runner import TaskRunner
-from core.agent.safety import PlaceholderSafetyPolicy
+from core.agent.safety import PlaceholderSafetyPolicy, SafetyVerdict
 from core.agent.schema import ElementMeta, PageObservation, ProposedAction
-from core.enums import ActionStatus, ActionType, SessionStatus, TaskMode, TaskStatus
+from core.enums import ActionStatus, ActionType, SafetyDecision, SessionStatus, TaskMode, TaskStatus
 from core.errors import USER_MESSAGES, ErrorCode
 from core.models import AgentAction, AgentTask, BrowserProfile, BrowserSession
 
@@ -341,4 +341,170 @@ async def test_runner_invalid_action_stores_raw_action_and_blank_action_type(run
     assert act.action_type == ""
     assert act.raw_action == "dance"
     assert len(browser.executed_actions) == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_block_decision(runner_task):
+    """Part D: BLOCK decision never calls browser.execute, action status BLOCKED, counts toward failure limit."""
+    obs = PageObservation(url="https://example.com", title="Test", element_indexes={1})
+    browser = FakeBrowserGateway(pages=[obs, obs])
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="click", target="1"),
+        ProposedAction(action="stop", value="Done"),
+    ])
+
+    class BlockingSafetyPolicy(PlaceholderSafetyPolicy):
+        def classify(self, action, obs):
+            return SafetyVerdict(decision=SafetyDecision.BLOCK, rule="custom_block_rule")
+
+    policy = BlockingSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    # Browser execute was never called for blocked action
+    assert len(browser.executed_actions) == 0
+
+    # Action is stored with status BLOCKED
+    act = await AgentAction.objects.filter(task=runner_task, sequence=1).afirst()
+    assert act.status == ActionStatus.BLOCKED
+    assert act.safety_decision == SafetyDecision.BLOCK
+    assert act.safety_rule == "custom_block_rule"
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_max_steps_reached(runner_task, monkeypatch):
+    """Part D: TASK_MAX_STEPS reached with an LLM that never stops -> FAILED MAX_STEPS_REACHED."""
+    from django.conf import settings
+    monkeypatch.setattr(settings, "TASK_MAX_STEPS", 3)
+
+    obs = PageObservation(url="https://example.com", title="Test", element_indexes={1})
+    browser = FakeBrowserGateway(pages=[obs, obs, obs, obs])
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="wait", value="1"),
+        ProposedAction(action="wait", value="1"),
+        ProposedAction(action="wait", value="1"),
+        ProposedAction(action="wait", value="1"),
+    ])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    await runner_task.arefresh_from_db()
+    assert runner_task.status == TaskStatus.FAILED
+    assert runner_task.error_code == ErrorCode.MAX_STEPS_REACHED
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_fr35_combining_rule(runner_task):
+    """Part D: AI requires_confirmation=True + policy ALLOW -> AWAITING_CONFIRMATION, not executed."""
+    obs = PageObservation(url="https://example.com", title="Test", element_indexes={1})
+    browser = FakeBrowserGateway(pages=[obs])
+
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="click", target="1", requires_confirmation=True),
+    ])
+    policy = PlaceholderSafetyPolicy()  # returns ALLOW for standard clicks
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    act = await AgentAction.objects.filter(task=runner_task, sequence=1).afirst()
+    assert act.status == ActionStatus.AWAITING_CONFIRMATION
+    assert act.safety_decision == SafetyDecision.REQUIRE_CONFIRMATION
+    assert len(browser.executed_actions) == 0
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_event_contract(runner_task):
+    """Part D: Every event has non-empty speak <= 20 words; ordered task_started -> browser_action -> task_completed; no agent_status when title doesn't change."""
+    obs1 = PageObservation(url="https://example.com", title="Same Title", element_indexes={1})
+    obs2 = PageObservation(url="https://example.com/2", title="Same Title", element_indexes={1})
+    browser = FakeBrowserGateway(pages=[obs1, obs2, obs2])
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="click", target="1"),
+        ProposedAction(action="stop", value="Completed successfully"),
+    ])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    assert len(publisher.events) > 0
+    # 1. Event ordering
+    assert publisher.events[0]["event"] == "task_started"
+    assert publisher.events[-1]["event"] == "task_completed"
+
+    # 2. No agent_status because title never changed
+    status_events = [e for e in publisher.events if e["event"] == "agent_status"]
+    assert len(status_events) == 0
+
+    # 3. Every event has speak <= 20 words
+    for e in publisher.events:
+        payload = e["payload"]
+        assert "speak" in payload, f"Event {e['event']} missing 'speak'"
+        speak_text = payload["speak"]
+        assert isinstance(speak_text, str) and len(speak_text.strip()) > 0
+        words = speak_text.strip().split()
+        assert len(words) <= 20, f"Event {e['event']} speak has {len(words)} words > 20: '{speak_text}'"
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_event_contract_page_change_emits_agent_status(runner_task):
+    """Part D: agent_status is emitted when page title changes."""
+    obs1 = PageObservation(url="https://example.com", title="Old Title - Site", element_indexes={1})
+    obs2 = PageObservation(url="https://example.com/new", title="New Title - Site", element_indexes={1})
+    browser = FakeBrowserGateway(pages=[obs1, obs2, obs2])
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="click", target="1"),
+        ProposedAction(action="stop", value="Done"),
+    ])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    status_events = [e for e in publisher.events if e["event"] == "agent_status"]
+    assert len(status_events) == 1
+    assert status_events[0]["payload"]["speak"] == "Now on: New Title, Site"
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_records_model_used_on_action(runner_task):
+    """Part D: Runner sets model_used from Proposal on AgentAction."""
+    obs = PageObservation(url="https://example.com", title="Title", element_indexes={1})
+    browser = FakeBrowserGateway(pages=[obs, obs])
+    llm = FakeLLMClient(script=[
+        Proposal(action=ProposedAction(action="click", target="1"), model="gemini-3.5-flash-lite"),
+        Proposal(action=ProposedAction(action="stop", value="Finished"), model="gemini-3.8-flash"),
+    ])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    act1 = await AgentAction.objects.filter(task=runner_task, sequence=1).afirst()
+    assert act1.model_used == "gemini-3.5-flash-lite"
+    act2 = await AgentAction.objects.filter(task=runner_task, sequence=2).afirst()
+    assert act2.model_used == "gemini-3.8-flash"
+
 

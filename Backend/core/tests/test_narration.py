@@ -181,3 +181,4 @@ def test_format_spoken_action_full_dispatch():
 
     act_stop = NormalizedAction(action=ActionType.STOP, value="Finished research")
     assert format_spoken_action(act_stop, obs) == "Done. Finished research"
+
