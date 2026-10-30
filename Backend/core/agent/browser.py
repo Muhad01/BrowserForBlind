@@ -7,6 +7,7 @@ from typing import Protocol
 import structlog
 from django.conf import settings
 
+from core.agent.narration import compute_accessible_name, compute_role
 from core.agent.schema import ElementMeta, ExecResult, NormalizedAction, PageObservation
 from core.enums import ActionType
 from core.errors import ErrorCode
@@ -77,13 +78,54 @@ class BrowserUseGateway:
             for idx, node in selector_map.items():
                 element_indexes.add(idx)
                 attrs = getattr(node, "attributes", {}) or {}
+                tag = getattr(node, "tag_name", "") or ""
+                input_type = attrs.get("type", "") or ""
+
+                ax_node = getattr(node, "ax_node", None)
+                ax_name = getattr(ax_node, "name", "") or ""
+                ax_role = getattr(ax_node, "role", "") or ""
+                aria_label = attrs.get("aria-label", "") or ""
+
+                children_text = ""
+                if hasattr(node, "get_all_children_text") and callable(node.get_all_children_text):
+                    try:
+                        children_text = node.get_all_children_text(max_depth=3) or ""
+                    except Exception:
+                        children_text = ""
+                if not children_text:
+                    children_text = getattr(node, "text", "") or ""
+
+                placeholder = attrs.get("placeholder", "") or ""
+                title = attrs.get("title", "") or ""
+                alt = attrs.get("alt", "") or ""
+                val = attrs.get("value", "") or ""
+                is_password = input_type.lower() == "password" or "password" in f"{attrs.get('name', '')} {attrs.get('id', '')}".lower()
+
+                acc_name = compute_accessible_name(
+                    ax_name=ax_name,
+                    aria_label=aria_label,
+                    children_text=children_text,
+                    placeholder=placeholder,
+                    title=title,
+                    alt=alt,
+                    value=val,
+                    is_password=is_password,
+                )
+                role = compute_role(ax_role=ax_role, tag=tag, input_type=input_type)
+
                 element_meta[idx] = ElementMeta(
-                    tag=getattr(node, "tag_name", "") or "",
-                    input_type=attrs.get("type", ""),
-                    name=attrs.get("name", ""),
-                    id=attrs.get("id", ""),
-                    aria_label=attrs.get("aria-label", ""),
-                    text=attrs.get("value", "") or getattr(node, "text", "") or "",
+                    index=idx,
+                    tag=tag,
+                    input_type=input_type,
+                    name=attrs.get("name", "") or "",
+                    id=attrs.get("id", "") or "",
+                    aria_label=aria_label,
+                    text=val or children_text,
+                    accessible_name=acc_name,
+                    role=role,
+                    placeholder=placeholder,
+                    title=title,
+                    alt=alt,
                 )
 
         return PageObservation(

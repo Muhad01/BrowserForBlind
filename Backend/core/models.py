@@ -183,6 +183,7 @@ class AgentTask(BaseModel):
     step_count = models.PositiveIntegerField(default=0)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+    final_url = models.CharField(max_length=2048, blank=True)
 
     class Meta:
         verbose_name = "Agent Task"

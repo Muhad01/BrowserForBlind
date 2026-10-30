@@ -27,20 +27,19 @@ class ConsolePublisher(EventPublisher):
         self.style = style
 
     async def publish(self, task: AgentTask, event: str, payload: dict[str, Any]) -> None:
+        speak_text = payload.get("speak") or payload.get("text") or payload.get("message") or ""
         if event == "browser_action":
-            self.stdout.write(self.style.SUCCESS(f">> [ACTION] {payload.get('text', '')}"))
+            self.stdout.write(self.style.SUCCESS(f">> [SPEAK] {speak_text}"))
         elif event == "task_started":
-            self.stdout.write(self.style.NOTICE(f">> [START] {payload.get('message', '')}"))
+            self.stdout.write(self.style.NOTICE(f">> [SPEAK] {speak_text}"))
         elif event == "task_completed":
-            self.stdout.write(self.style.SUCCESS(f">> [COMPLETED] Result: {payload.get('result', '')}"))
+            self.stdout.write(self.style.SUCCESS(f">> [SPEAK] {speak_text}"))
         elif event == "task_failed":
-            self.stdout.write(self.style.ERROR(f">> [FAILED] ({payload.get('error_code')}): {payload.get('error_message')}"))
-        elif event == "agent_status":
-            self.stdout.write(f"   [STATUS] Step {payload.get('step')}: {payload.get('message')}")
-        elif event == "perception_result":
-            self.stdout.write(self.style.MIGRATE_HEADING(f">> [PERCEPTION] {payload.get('text')}"))
+            self.stdout.write(self.style.ERROR(f">> [SPEAK] {speak_text}"))
+        elif event == "agent_status" or event == "perception_result":
+            self.stdout.write(self.style.MIGRATE_HEADING(f">> [SPEAK] {speak_text}"))
         else:
-            self.stdout.write(f"   [EVENT: {event}] {payload}")
+            self.stdout.write(f"   [{event}] {speak_text or payload}")
 
 
 class Command(BaseCommand):

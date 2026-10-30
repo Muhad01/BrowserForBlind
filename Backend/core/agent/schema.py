@@ -14,14 +14,20 @@ from core.errors import ErrorCode
 
 
 class ElementMeta(BaseModel):
-    """Metadata for an interactive element on the page, used by SafetyPolicy (CON-03)."""
+    """Metadata for an interactive element on the page, used by SafetyPolicy and Narration."""
 
+    index: int | None = None
     tag: str = ""
     input_type: str = ""
     name: str = ""
     id: str = ""
     aria_label: str = ""
     text: str = ""
+    accessible_name: str = ""
+    role: str = ""
+    placeholder: str = ""
+    title: str = ""
+    alt: str = ""
 
 
 class ProposedAction(BaseModel):

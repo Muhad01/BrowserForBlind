@@ -8,8 +8,15 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.agent.browser import BrowserGateway
-from core.agent.events import EventPublisher, format_spoken_action
+from core.agent.events import EventPublisher
 from core.agent.llm import HistoryItem, LLMBadOutput, LLMClient, LLMUnavailable, Proposal
+from core.agent.narration import (
+    format_page_change,
+    format_spoken_action,
+    format_stop,
+    format_task_cancelled,
+    format_task_started,
+)
 from core.agent.perception import PerceptionPort
 from core.agent.safety import SafetyPolicy, SafetyVerdict
 from core.agent.schema import NormalizedAction
@@ -48,7 +55,8 @@ class TaskRunner:
         profile_dir = task.session.profile.path if task.session.profile else settings.BROWSER_PROFILE_ROOT / str(task.user_id) / "default"
 
         # FR-19, FR-59: Announce task start
-        await self.publisher.publish(task, "task_started", {"message": f"Starting: {task.goal}"})
+        start_speak = format_task_started(task.goal)
+        await self.publisher.publish(task, "task_started", {"speak": start_speak, "goal": task.goal})
 
         max_steps = getattr(settings, "TASK_MAX_STEPS", 50)
         failure_limit = getattr(settings, "CONSECUTIVE_FAILURE_LIMIT", 3)
@@ -56,6 +64,7 @@ class TaskRunner:
         history: list[HistoryItem] = []
         step_count = task.step_count
         consecutive_failures = task.consecutive_failures
+        last_title: str | None = None
 
         try:
             try:
@@ -74,11 +83,12 @@ class TaskRunner:
                     task.error_code = ErrorCode.CANCELLED_BY_USER.value
                     task.error_message = USER_MESSAGES[ErrorCode.CANCELLED_BY_USER]
                     await task.asave(update_fields=["error_code", "error_message", "updated_at"])
+                    cancel_speak = format_task_cancelled()
                     await self.publisher.publish(
                         task,
                         "task_failed",
                         {
-                            "speak": task.error_message,
+                            "speak": cancel_speak,
                             "error_code": ErrorCode.CANCELLED_BY_USER.value,
                             "error_message": task.error_message,
                         },
@@ -91,6 +101,21 @@ class TaskRunner:
 
                 # Capture current page state
                 obs = await self.browser.observe()
+
+                # Publish agent_status ONLY when page title changed (FR-20, Part C.3)
+                if last_title is not None and obs.title != last_title and obs.title.strip():
+                    page_speak = format_page_change(obs.title)
+                    await self.publisher.publish(
+                        task,
+                        "agent_status",
+                        {
+                            "speak": page_speak,
+                            "step": step_count,
+                            "url": obs.url,
+                            "title": obs.title,
+                        },
+                    )
+                last_title = obs.title
                 state_hash = hashlib.sha256(f"{obs.url}{obs.title}".encode()).hexdigest()
                 await PageState.objects.acreate(
                     task=task,
@@ -255,21 +280,33 @@ class TaskRunner:
                         logger.info("Task already terminal, skipping completion transition", task_id=str(task.id), status=task.status)
                         return
 
+                    final_url = obs.url if obs else ""
+                    final_title = obs.title if obs else ""
                     task.result_text = normalized.value
-                    await task.asave(update_fields=["result_text", "updated_at"])
+                    task.final_url = final_url
+                    await task.asave(update_fields=["result_text", "final_url", "updated_at"])
                     await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
                     # FR-12, FR-22, FR-64
                     await self.publisher.publish(task, "task_completed", {
+                        "speak": format_stop(normalized.value),
                         "result": normalized.value,
-                        "reason": normalized.reason,
+                        "final_url": final_url,
+                        "final_title": final_title,
                     })
                     return
 
                 if normalized.action == ActionType.DESCRIBE:
                     spoken_msg = format_spoken_action(normalized, obs)
-                    await self.publisher.publish(task, "browser_action", {"text": spoken_msg})
+                    await self.publisher.publish(task, "browser_action", {
+                        "speak": spoken_msg,
+                        "action": ActionType.DESCRIBE.value,
+                        "step": sequence,
+                    })
                     description = await self.perception.describe(obs)
-                    await self.publisher.publish(task, "perception_result", {"text": description})
+                    await self.publisher.publish(task, "perception_result", {
+                        "speak": description,
+                        "text": description,
+                    })
                     await AgentAction.objects.acreate(
                         task=task,
                         sequence=sequence,
@@ -289,7 +326,11 @@ class TaskRunner:
                 else:
                     # Executing physical browser interaction
                     spoken_msg = format_spoken_action(normalized, obs)
-                    await self.publisher.publish(task, "browser_action", {"text": spoken_msg})
+                    await self.publisher.publish(task, "browser_action", {
+                        "speak": spoken_msg,
+                        "action": normalized.action.value,
+                        "step": sequence,
+                    })
 
                     # Handle password field redaction
                     is_redacted = False
@@ -342,11 +383,6 @@ class TaskRunner:
                 task.consecutive_failures = consecutive_failures
                 task.step_count = step_count
                 await task.asave(update_fields=["consecutive_failures", "step_count", "updated_at"])
-                await self.publisher.publish(
-                    task,
-                    "agent_status",
-                    {"step": step_count, "message": f"Step {step_count} completed."},
-                )
 
         except LLMUnavailable as err:
             await self._fail_task(task, ErrorCode.LLM_UNAVAILABLE, detail=str(err))
