@@ -25,7 +25,28 @@ The user speaks a goal; an AI Task Agent proposes one browser action at a time; 
 └── THIRD_PARTY_NOTICES.md   # Third-party software notices (browser-use, etc.)
 ```
 
-## Running the Celery Worker
+## Development Setup & Running
+
+Three terminals on Windows:
+
+1. **Infrastructure**:
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d
+   ```
+2. **ASGI Web & WebSocket Server** (Daphne):
+   ```bash
+   cd Backend
+   uv run python manage.py runserver
+   ```
+3. **Background Browser Celery Worker**:
+   ```bash
+   cd Backend
+   uv run celery -A cight worker --pool=solo --loglevel=info
+   ```
+
+Then open `http://localhost:8000/dev/ws-test/` in your browser to interact with the developer test workbench.
+
+## Running the Celery Worker directly
 
 Celery's default prefork pool does not support Windows process management. Run the worker with the `solo` pool and concurrency 1:
 
