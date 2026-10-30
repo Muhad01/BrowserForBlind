@@ -22,22 +22,23 @@ User = get_user_model()
 class ConsolePublisher(EventPublisher):
     """Event publisher that prints spoken announcements and status updates to stdout."""
 
-    def __init__(self, stdout):
+    def __init__(self, stdout, style):
         self.stdout = stdout
+        self.style = style
 
     async def publish(self, task: AgentTask, event: str, payload: dict[str, Any]) -> None:
         if event == "browser_action":
-            self.stdout.write(self.stdout.style.SUCCESS(f">> [ACTION] {payload.get('text', '')}"))
+            self.stdout.write(self.style.SUCCESS(f">> [ACTION] {payload.get('text', '')}"))
         elif event == "task_started":
-            self.stdout.write(self.stdout.style.NOTICE(f">> [START] {payload.get('message', '')}"))
+            self.stdout.write(self.style.NOTICE(f">> [START] {payload.get('message', '')}"))
         elif event == "task_completed":
-            self.stdout.write(self.stdout.style.SUCCESS(f">> [COMPLETED] Result: {payload.get('result', '')}"))
+            self.stdout.write(self.style.SUCCESS(f">> [COMPLETED] Result: {payload.get('result', '')}"))
         elif event == "task_failed":
-            self.stdout.write(self.stdout.style.ERROR(f">> [FAILED] ({payload.get('error_code')}): {payload.get('error_message')}"))
+            self.stdout.write(self.style.ERROR(f">> [FAILED] ({payload.get('error_code')}): {payload.get('error_message')}"))
         elif event == "agent_status":
             self.stdout.write(f"   [STATUS] Step {payload.get('step')}: {payload.get('message')}")
         elif event == "perception_result":
-            self.stdout.write(self.stdout.style.MIGRATE_HEADING(f">> [PERCEPTION] {payload.get('text')}"))
+            self.stdout.write(self.style.MIGRATE_HEADING(f">> [PERCEPTION] {payload.get('text')}"))
         else:
             self.stdout.write(f"   [EVENT: {event}] {payload}")
 
@@ -60,23 +61,23 @@ class Command(BaseCommand):
             if not settings.DEBUG:
                 raise CommandError("User creation via run_task is disallowed in production mode.")
             user = User.objects.create_user(username=username, password="devpassword123")
-            self.stdout.write(self.stdout.style.NOTICE(f"Created dev user '{username}'"))
+            self.stdout.write(self.style.NOTICE(f"Created dev user '{username}'"))
 
-        self.stdout.write(self.stdout.style.MIGRATE_HEADING(f"Creating task for '{username}': \"{goal}\""))
+        self.stdout.write(self.style.MIGRATE_HEADING(f"Creating task for '{username}': \"{goal}\""))
 
         # For sync mode, don't dispatch to Celery
         task = create_task(user, goal=goal, dispatch=not is_sync)
         self.stdout.write(f"Created AgentTask id: {task.id} (Status: {task.status})")
 
         if is_sync:
-            self.stdout.write(self.stdout.style.WARNING("Running task synchronously (inline)..."))
+            self.stdout.write(self.style.WARNING("Running task synchronously (inline)..."))
             task.transition_to(TaskStatus.RUNNING)
 
             llm = GeminiClient()
             browser = BrowserUseGateway()
             policy = PlaceholderSafetyPolicy()
             perception = PlaceholderPerceptionAgent()
-            publisher = ConsolePublisher(self.stdout)
+            publisher = ConsolePublisher(self.stdout, self.style)
 
             runner = TaskRunner(
                 task_id=task.id,
@@ -88,15 +89,18 @@ class Command(BaseCommand):
             )
 
             try:
+                import sys
+                if sys.platform == "win32":
+                    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
                 asyncio.run(runner.run())
             except KeyboardInterrupt:
-                self.stdout.write(self.stdout.style.ERROR("Execution interrupted by user."))
+                self.stdout.write(self.style.ERROR("Execution interrupted by user."))
             finally:
                 task.refresh_from_db()
                 self.stdout.write(f"Final task status: {task.status}")
                 if task.result_text:
-                    self.stdout.write(self.stdout.style.SUCCESS(f"Final Result: {task.result_text}"))
+                    self.stdout.write(self.style.SUCCESS(f"Final Result: {task.result_text}"))
         else:
-            self.stdout.write(self.stdout.style.SUCCESS(f"Dispatched task to Celery worker (Task ID: {task.id})"))
+            self.stdout.write(self.style.SUCCESS(f"Dispatched task to Celery worker (Task ID: {task.id})"))
             self.stdout.write("Monitor celery worker logs to view task execution.")
 

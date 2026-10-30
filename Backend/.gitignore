@@ -32,6 +32,9 @@ dist/
 *.log
 *.bak
 
+# User session browser profiles
+browser_profiles/
+
 # Secrets and sensitive files
 secrets.env
 .env

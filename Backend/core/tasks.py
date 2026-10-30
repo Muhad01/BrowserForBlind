@@ -53,4 +53,8 @@ def run_agent_task(self, task_id: str) -> None:
         publisher=publisher,
     )
 
+    import sys
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
     asyncio.run(runner.run())
