@@ -1,44 +1,30 @@
-# Browser for Blind
+# CIGHT-BROWSER
 
-An AI-powered, voice-driven web browser for blind and visually impaired users.
+An AI-driven, voice-only web browser tailored for blind and low-vision users (NUST MCS Final Year Project).
 
-Instead of reading a screen, the user tells the browser what they want to do — *"open my email and read the latest message"*, *"book a ticket for Saturday"* — and an AI agent navigates the web on their behalf, then narrates the results back.
+The user speaks a goal; an AI Task Agent proposes one browser action at a time; each action is normalized, validated, and verified by a deterministic SafetyPolicy before a Playwright/Chromium executor runs it in the browser; progress and results are spoken back continuously. A logically separate Perception Agent describes the current page from a screenshot upon request.
 
-## How it works
+## Architecture
 
-- **Server** — a Python backend runs an AI browser agent together with a Chromium browser for each user (with persistent profiles). The agent reads pages, clicks, types and fills forms to complete the user's task.
-- **Clients** — lightweight desktop and mobile apps. They take voice input and play back spoken narration. All of the browsing happens on the server.
+- **Frontend**: Next.js + React + TypeScript web application with Zustand for modular domain state and the Web Speech API (`SpeechRecognition` for voice input, `speechSynthesis` for audio feedback) wrapped in accessible UI controls and `aria-live` regions.
+- **Backend**: Django 5 + Django Channels (WebSockets via Daphne) with PostgreSQL as the authoritative source of truth. Redis acts as the channel layer and Celery task broker.
+- **Execution & Safety**: Celery worker runs the browser automation loop using Playwright and Chromium. Every action is gated by a deterministic `SafetyPolicy` before execution.
+- **AI**: Google Gemini (multimodal, model ID configurable via environment, defaulting to `gemini-2.5-flash`).
 
-## Repository structure
+## Repository Structure
 
 ```
 .
-├── Backend/    # Python server and AI browser agent (built on the open-source browser-use library)
-└── Frontend/   # Client applications (desktop / mobile)
+├── Backend/                 # Django ASGI backend, Celery worker, and safety services
+│   ├── cight/               # Django project configuration (settings, ASGI, Celery)
+│   ├── core/                # Domain app: models, enums, services, tests
+│   ├── manage.py
+│   └── pyproject.toml
+├── Frontend/                # Next.js web application
+├── docker-compose.dev.yml   # Local dev PostgreSQL and Redis
+└── THIRD_PARTY_NOTICES.md   # Third-party software notices (browser-use, etc.)
 ```
 
-## Getting started (Backend)
+## Security & Secrets
 
-Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
-
-```bash
-cd Backend
-uv sync
-uvx playwright install chromium --with-deps
-```
-
-Create `Backend/.env` with the API key for your LLM provider (see `Backend/.env.example`), for example:
-
-```bash
-MISTRAL_API_KEY=your-key
-```
-
-Never commit `.env` files. They are already listed in `.gitignore`.
-
-## Developer
-
-Developed by **[Muhad01](https://github.com/Muhad01)** as a Final Year Project.
-
-## Acknowledgements
-
-The backend agent builds on [browser-use](https://github.com/browser-use/browser-use) (MIT License). See [Backend/LICENSE](Backend/LICENSE).
+Never commit `.env` files. They are listed in `.gitignore`. Use `.env.example` as a template for local environment configuration.
