@@ -10,6 +10,7 @@ Requirements implemented:
 - FR-53: Server-side browser profile root configuration.
 """
 import os
+import sys
 from pathlib import Path
 
 import environ
@@ -39,6 +40,10 @@ env = environ.Env(
     TASK_MAX_STEPS=(int, 50),
     BROWSER_HEADLESS=(bool, False),
     BROWSER_PROFILE_ROOT=(str, str(BASE_DIR / "browser_profiles")),
+    FRONTEND_ORIGINS=(str, "http://localhost:3000,http://127.0.0.1:3000"),
+    WS_TICKET_TTL_SECONDS=(int, 60),
+    WS_MAX_MESSAGE_BYTES=(int, 4096),
+    COOKIE_SECURE=(bool, False),
 )
 
 # Read .env file if it exists
@@ -180,6 +185,41 @@ STALE_TASK_SECONDS = env("STALE_TASK_SECONDS")
 # Browser Profiles Root (FR-52..54)
 BROWSER_PROFILE_ROOT = Path(env("BROWSER_PROFILE_ROOT"))
 BROWSER_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Frontend & WebSocket Origins (FR-55, NFR-SEC-05)
+raw_origins = env("FRONTEND_ORIGINS")
+FRONTEND_ORIGINS = [o.strip() for o in raw_origins.split(",") if o.strip()]
+if DEBUG:
+    for local_origin in ["http://localhost:8000", "http://127.0.0.1:8000"]:
+        if local_origin not in FRONTEND_ORIGINS:
+            FRONTEND_ORIGINS.append(local_origin)
+
+CSRF_TRUSTED_ORIGINS = list(FRONTEND_ORIGINS)
+WS_TICKET_TTL_SECONDS = env("WS_TICKET_TTL_SECONDS")
+WS_MAX_MESSAGE_BYTES = env("WS_MAX_MESSAGE_BYTES")
+
+# Cookies & Security (NFR-SEC-03, NFR-SEC-05)
+COOKIE_SECURE = env("COOKIE_SECURE")
+SESSION_COOKIE_SECURE = COOKIE_SECURE
+CSRF_COOKIE_SECURE = COOKIE_SECURE
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False
+
+# Cache Configuration (Redis for prod/worker, LocMemCache for tests)
+if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "cight-test-cache",
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+        }
+    }
 
 # Structured JSON Logging (NFR-OPS-03)
 LOGGING = {
