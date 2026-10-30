@@ -14,6 +14,9 @@ from core.agent.narration import (
     format_task_started,
     format_type,
     format_wait,
+    is_url_like,
+    page_changed,
+    trim_accessible_name,
 )
 from core.agent.schema import ElementMeta, NormalizedAction, PageObservation
 from core.enums import ActionType
@@ -79,6 +82,38 @@ def test_page_change_narration():
     assert format_page_change("Artificial intelligence - Wikipedia") == "Now on: Artificial intelligence, Wikipedia"
     assert format_page_change("Home | CNN News") == "Now on: Home, CNN News"
     assert format_page_change("Python — Welcome") == "Now on: Python, Welcome"
+
+    # Step 0: URL-like title or empty title falls back to friendly host and NEVER speaks URL path
+    assert page_changed("en.wikipedia.org/wiki/Main_Page", url="https://en.wikipedia.org/wiki/Main_Page") == "Now on: wikipedia.org"
+    assert page_changed("", url="https://en.wikipedia.org/wiki/Main_Page") == "Now on: wikipedia.org"
+    assert page_changed("https://example.com/some/path", url="https://example.com/some/path") == "Now on: example.com"
+    assert page_changed("Page", url="http://www.google.com/search") == "Now on: google.com"
+    assert is_url_like("en.wikipedia.org/wiki/Main_Page")
+    assert is_url_like("/wiki/Main_Page")
+
+
+def test_suggestion_role_narration():
+    meta = ElementMeta(role="suggestion", accessible_name="Artificial intelligence")
+    assert format_click(meta) == "Choosing the suggestion Artificial intelligence"
+
+    # With empty accessible name
+    meta_empty = ElementMeta(role="suggestion", accessible_name="")
+    assert format_click(meta_empty) == "Choosing the suggestion"
+
+
+def test_trim_accessible_name():
+    # Trim at newline
+    assert trim_accessible_name("Artificial intelligence\nIntelligence in machines") == "Artificial intelligence"
+    # Trim at sentence break
+    assert trim_accessible_name("Artificial intelligence. Intelligence in machines") == "Artificial intelligence"
+    # Trim repeated consecutive word
+    assert trim_accessible_name("Artificial intelligence Intelligence in machines") == "Artificial intelligence"
+    # Long text trimmed at 40 chars
+    long_name = "This is a very long text exceeding forty characters"
+    trimmed = trim_accessible_name(long_name)
+    assert len(trimmed) <= 40
+    # Normal person name not mutilated
+    assert trim_accessible_name("Barack Obama") == "Barack Obama"
 
 
 def test_terminal_and_lifecycle_narration():

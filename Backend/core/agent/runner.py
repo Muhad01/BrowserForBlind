@@ -104,7 +104,7 @@ class TaskRunner:
 
                 # Publish agent_status ONLY when page title changed (FR-20, Part C.3)
                 if last_title is not None and obs.title != last_title and obs.title.strip():
-                    page_speak = format_page_change(obs.title)
+                    page_speak = format_page_change(obs.title, url=obs.url)
                     await self.publisher.publish(
                         task,
                         "agent_status",

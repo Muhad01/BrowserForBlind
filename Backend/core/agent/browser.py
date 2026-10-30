@@ -7,7 +7,7 @@ from typing import Protocol
 import structlog
 from django.conf import settings
 
-from core.agent.narration import compute_accessible_name, compute_role
+from core.agent.narration import compute_accessible_name, compute_role, is_url_like
 from core.agent.schema import ElementMeta, ExecResult, NormalizedAction, PageObservation
 from core.enums import ActionType
 from core.errors import ErrorCode
@@ -68,6 +68,20 @@ class BrowserUseGateway:
 
         state = await self.session.get_browser_state_summary(include_screenshot=False)
 
+        title = state.title or ""
+        if is_url_like(title):
+            for _ in range(4):
+                await asyncio.sleep(0.5)
+                try:
+                    candidate = await self.session.get_current_page_title()
+                    if candidate and not is_url_like(candidate):
+                        title = candidate
+                        break
+                except Exception:
+                    pass
+            if is_url_like(title):
+                title = ""
+
         elements_text = ""
         element_indexes: set[int] = set()
         element_meta: dict[int, ElementMeta] = {}
@@ -96,7 +110,7 @@ class BrowserUseGateway:
                     children_text = getattr(node, "text", "") or ""
 
                 placeholder = attrs.get("placeholder", "") or ""
-                title = attrs.get("title", "") or ""
+                title_attr = attrs.get("title", "") or ""
                 alt = attrs.get("alt", "") or ""
                 val = attrs.get("value", "") or ""
                 is_password = input_type.lower() == "password" or "password" in f"{attrs.get('name', '')} {attrs.get('id', '')}".lower()
@@ -106,12 +120,24 @@ class BrowserUseGateway:
                     aria_label=aria_label,
                     children_text=children_text,
                     placeholder=placeholder,
-                    title=title,
+                    title=title_attr,
                     alt=alt,
                     value=val,
                     is_password=is_password,
                 )
-                role = compute_role(ax_role=ax_role, tag=tag, input_type=input_type)
+                has_href = "href" in attrs
+                is_option = (
+                    ax_role == "option"
+                    or attrs.get("role", "").lower() == "option"
+                    or tag.lower() == "option"
+                )
+                role = compute_role(
+                    ax_role=ax_role,
+                    tag=tag,
+                    input_type=input_type,
+                    has_href=has_href,
+                    is_option=is_option,
+                )
 
                 element_meta[idx] = ElementMeta(
                     index=idx,
@@ -124,13 +150,13 @@ class BrowserUseGateway:
                     accessible_name=acc_name,
                     role=role,
                     placeholder=placeholder,
-                    title=title,
+                    title=title_attr,
                     alt=alt,
                 )
 
         return PageObservation(
             url=state.url or "about:blank",
-            title=state.title or "",
+            title=title,
             elements_text=elements_text,
             element_indexes=element_indexes,
             element_meta=element_meta,

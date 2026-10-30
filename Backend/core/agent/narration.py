@@ -5,7 +5,9 @@ Rules:
 - Keep every sentence under 20 words.
 - Never read internal IDs, class names, or generated element keys.
 - Never speak credentials or sensitive field values.
+- Never speak a raw URL path on page changes.
 """
+import re
 from urllib.parse import urlparse
 
 from core.agent.schema import ElementMeta, NormalizedAction, PageObservation
@@ -19,6 +21,31 @@ def ensure_under_20_words(text: str) -> str:
     if len(words) <= 20:
         return text.strip()
     return " ".join(words[:20])
+
+
+def trim_accessible_name(text: str) -> str:
+    """Trim accessible names at the first sentence break or 40 characters."""
+    if not text:
+        return ""
+
+    # Split at paragraph or sentence boundaries
+    s = text
+    for sep in ["\n\n", "\r\n\r\n", ". ", " - ", " | ", " – ", " — "]:
+        if sep in s:
+            s = s.split(sep, 1)[0]
+            break
+
+    s = " ".join(s.strip().split())
+
+    # Detect repeated word transition across concatenated elements (e.g. "Artificial intelligence Intelligence in machines")
+    dup_match = re.search(r"\b([A-Za-z0-9]+)\s+(?=\1\b)", s, re.IGNORECASE)
+    if dup_match:
+        s = s[: dup_match.end(1)].strip()
+
+    if len(s) > 40:
+        s = s[:40].strip()
+
+    return s
 
 
 def compute_accessible_name(
@@ -47,19 +74,35 @@ def compute_accessible_name(
         "" if is_password else value,
     ]
     for cand in candidates:
-        cleaned = " ".join(cand.strip().split())
-        if cleaned:
-            return cleaned[:60]
+        if cand and cand.strip():
+            trimmed = trim_accessible_name(cand)
+            if trimmed:
+                return trimmed[:60]
     return ""
 
 
-def compute_role(ax_role: str = "", tag: str = "", input_type: str = "") -> str:
+def compute_role(
+    ax_role: str = "",
+    tag: str = "",
+    input_type: str = "",
+    has_href: bool = False,
+    is_option: bool = False,
+) -> str:
     """Compute human-friendly role from accessibility tree or HTML tag/type."""
-    if ax_role and ax_role.strip():
-        return ax_role.strip().lower()
+    if is_option or ax_role == "option":
+        return "suggestion"
 
     tag_lower = tag.strip().lower()
     type_lower = input_type.strip().lower()
+    ax_lower = ax_role.strip().lower() if ax_role else ""
+
+    if tag_lower == "a" and has_href:
+        return "link"
+
+    if ax_lower and ax_lower not in {"generic", "group", "none"}:
+        if ax_lower == "option":
+            return "suggestion"
+        return ax_lower
 
     if tag_lower == "a":
         return "link"
@@ -77,9 +120,21 @@ def compute_role(ax_role: str = "", tag: str = "", input_type: str = "") -> str:
         return "checkbox"
     if tag_lower == "input" and type_lower == "radio":
         return "option"
+    if tag_lower == "option":
+        return "suggestion"
     if tag_lower == "input":
         return "input field"
     return tag_lower or "element"
+
+
+def is_url_like(text: str) -> bool:
+    """Check if a string looks like a URL or raw path rather than a friendly page title."""
+    t = (text or "").strip().lower()
+    if not t or t == "page":
+        return True
+    if "://" in t or t.startswith("/") or t.startswith("www."):
+        return True
+    return bool("." in t and "/" in t)
 
 
 def format_navigate(url: str) -> str:
@@ -105,12 +160,17 @@ def format_navigate(url: str) -> str:
 
 
 def format_click(meta: ElementMeta | None) -> str:
-    """Format click action: 'Opening the link ...', 'Clicking the ... button', or 'Clicking a button'."""
+    """Format click action: suggestions, links, buttons, or generic element."""
     if not meta:
         return "Clicking a button"
 
     role = meta.role.lower() if meta.role else ""
     name = meta.accessible_name.strip() if meta.accessible_name else ""
+
+    if role == "suggestion":
+        if name:
+            return ensure_under_20_words(f"Choosing the suggestion {name}")
+        return "Choosing the suggestion"
 
     if role == "link":
         if name:
@@ -185,12 +245,26 @@ def format_stop(result: str) -> str:
     return ensure_under_20_words(f"Done. {result}")
 
 
-def format_page_change(new_title: str) -> str:
-    """Format page transition: 'Now on: Artificial intelligence, Wikipedia'."""
-    title = new_title.strip()
-    if not title:
+def page_changed(new_title: str, url: str = "") -> str:
+    """Format page transition without ever speaking a URL path (NFR-ACC-02)."""
+    title = (new_title or "").strip()
+    if is_url_like(title):
+        if url:
+            parsed = urlparse(url if "://" in url else f"https://{url}")
+            host = parsed.netloc.lower()
+            if ":" in host:
+                host = host.split(":")[0]
+            if host.startswith("www."):
+                host = host[4:]
+            if host.startswith("en."):
+                host = host[3:]
+            elif host.startswith("m."):
+                host = host[2:]
+            friendly = host if host else url
+            return ensure_under_20_words(f"Now on: {friendly}")
         return "Now on new page"
 
+    # Clean title
     for sep in [" - ", " | ", " – ", " — "]:
         if sep in title:
             parts = title.rsplit(sep, 1)
@@ -198,6 +272,10 @@ def format_page_change(new_title: str) -> str:
             break
 
     return ensure_under_20_words(f"Now on: {title}")
+
+
+# format_page_change alias
+format_page_change = page_changed
 
 
 def format_task_started(goal: str) -> str:
