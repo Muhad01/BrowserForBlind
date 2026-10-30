@@ -2,11 +2,11 @@
 import json
 from typing import Any
 
+import structlog
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.conf import settings
 from pydantic import ValidationError
-import structlog
 
 from core.errors import USER_MESSAGES, ErrorCode
 from core.realtime.schemas import (
@@ -64,6 +64,7 @@ class BrowserConsumer(AsyncJsonWebsocketConsumer):
             )
             return
 
+        raw_data = None
         try:
             raw_data = json.loads(raw_bytes.decode("utf-8"))
             msg = ClientMessage.model_validate(raw_data)
@@ -89,7 +90,17 @@ class BrowserConsumer(AsyncJsonWebsocketConsumer):
                     text=payload.text,
                     request_id=msg.request_id,
                 )
-                if res.get("status") == "error":
+                if res.get("status") in {"stopping", "no_active_task"}:
+                    await self.send_json({
+                        "event": "agent_status",
+                        "task_id": res.get("task_id"),
+                        "request_id": msg.request_id,
+                        "payload": {
+                            "speak": res.get("speak", "Stopping."),
+                            "status": res.get("status"),
+                        },
+                    })
+                elif res.get("status") == "error":
                     await self.send_json({
                         "event": "task_failed",
                         "task_id": None,

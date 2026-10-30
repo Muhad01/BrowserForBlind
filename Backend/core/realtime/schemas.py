@@ -1,6 +1,6 @@
 """Realtime WebSocket event schemas and envelopes (FR-56..58, FR-66)."""
-from typing import Any, Literal
 import uuid
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

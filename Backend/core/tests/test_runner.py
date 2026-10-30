@@ -173,7 +173,7 @@ async def test_runner_cancel_requested_mid_run(runner_task):
     browser = FakeBrowserGateway(pages=[obs, obs])
 
     class CancellingLLM(FakeLLMClient):
-        async def propose(self, goal, history, obs):
+        async def propose(self, goal, history, obs, *args, **kwargs):
             # Simulate cancel button pressed mid-run
             runner_task.cancel_requested = True
             await runner_task.asave(update_fields=["cancel_requested"])
@@ -190,6 +190,12 @@ async def test_runner_cancel_requested_mid_run(runner_task):
     await runner_task.arefresh_from_db()
     assert runner_task.status == TaskStatus.CANCELLED
     assert runner_task.error_code == ErrorCode.CANCELLED_BY_USER
+
+    # Pre-execution cancellation check marks action as SKIPPED and skips browser execution
+    action = await AgentAction.objects.filter(task=runner_task).afirst()
+    assert action is not None
+    assert action.status == ActionStatus.SKIPPED
+    assert len(browser.executed_actions) == 0
 
 
 @pytest.mark.django_db(transaction=True)

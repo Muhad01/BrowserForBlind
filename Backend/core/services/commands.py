@@ -2,11 +2,11 @@
 
 Encapsulates all command interpretation and dispatch outside of consumers (CON-01).
 """
-from typing import Any
 import uuid
+from typing import Any
 
-from django.core.exceptions import ValidationError
 import structlog
+from django.core.exceptions import ValidationError
 
 from core.enums import TaskMode, TaskStatus
 from core.errors import USER_MESSAGES, ErrorCode
@@ -87,7 +87,7 @@ def handle_stop_task(
             "speak": "There's nothing running right now.",
         }
 
-    request_cancel(task, user)
+    request_cancel(user, task.id)
     return {
         "status": "stopping",
         "task_id": str(task.id),

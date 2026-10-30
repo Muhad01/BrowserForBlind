@@ -53,18 +53,30 @@ def get_or_create_session(user: AbstractBaseUser | AnonymousUser) -> BrowserSess
         raise
 
 
-def close_session(user: AbstractBaseUser | AnonymousUser, session_id: str | uuid.UUID) -> BrowserSession:
+def close_session(
+    user: AbstractBaseUser | AnonymousUser,
+    session_id: str | uuid.UUID | None = None,
+) -> BrowserSession | None:
     """FR-02: Terminate an active session and release its resources.
 
     Enforces strict ownership validation (NFR-SEC-01).
+    If session_id is None, finds and closes the user's currently active session.
     """
     if not user.is_authenticated:
         raise PermissionDenied("Authentication required to close a session (NFR-SEC-01).")
 
-    try:
-        session = BrowserSession.objects.get(pk=session_id)
-    except BrowserSession.DoesNotExist as err:
-        raise PermissionDenied("Session not found or inaccessible.") from err
+    if session_id is None:
+        session = BrowserSession.objects.filter(
+            user=user,
+            status=SessionStatus.ACTIVE,
+        ).first()
+        if not session:
+            return None
+    else:
+        try:
+            session = BrowserSession.objects.get(pk=session_id)
+        except BrowserSession.DoesNotExist as err:
+            raise PermissionDenied("Session not found or inaccessible.") from err
 
     if session.user_id != user.id:
         raise PermissionDenied("User does not own this session (NFR-SEC-01).")
