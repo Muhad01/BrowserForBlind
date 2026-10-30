@@ -28,7 +28,9 @@ env = environ.Env(
     DATABASE_URL=(str, ""),
     REDIS_URL=(str, "redis://127.0.0.1:6379/0"),
     GEMINI_API_KEY=(str, ""),
-    GEMINI_MODEL=(str, "gemini-3.5-flash"),
+    GEMINI_TASK_MODELS=(str, "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.8-flash,gemini-3.6-flash"),
+    GEMINI_PERCEPTION_MODELS=(str, "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite"),
+    STALE_TASK_SECONDS=(int, 300),
     LOOP_REPEAT_LIMIT=(int, 3),
     CONSECUTIVE_FAILURE_LIMIT=(int, 3),
     ACTION_TIMEOUT_SECONDS=(int, 30),
@@ -143,7 +145,27 @@ CELERY_TIMEZONE = TIME_ZONE
 
 # AI Configuration (SRS §2.5, TBD-02)
 GEMINI_API_KEY = env("GEMINI_API_KEY")
-GEMINI_MODEL = env("GEMINI_MODEL")
+
+# Fallback model chains (NFR-REL-01, TBD-02)
+# Check for legacy GEMINI_MODEL for backward compatibility
+if "GEMINI_TASK_MODELS" in os.environ:
+    _raw_task = env("GEMINI_TASK_MODELS")
+    GEMINI_TASK_MODELS = [m.strip() for m in _raw_task.split(",") if m.strip()]
+elif "GEMINI_MODEL" in os.environ:
+    _legacy_model = env("GEMINI_MODEL")
+    GEMINI_TASK_MODELS = [m.strip() for m in _legacy_model.split(",") if m.strip()]
+else:
+    GEMINI_TASK_MODELS = [
+        m.strip()
+        for m in env("GEMINI_TASK_MODELS").split(",")
+        if m.strip()
+    ]
+
+_raw_perception = env("GEMINI_PERCEPTION_MODELS")
+GEMINI_PERCEPTION_MODELS = [m.strip() for m in _raw_perception.split(",") if m.strip()]
+
+# Maintain GEMINI_MODEL alias pointing to primary task model
+GEMINI_MODEL = GEMINI_TASK_MODELS[0] if GEMINI_TASK_MODELS else "gemini-3.5-flash-lite"
 
 # Operational Thresholds (NFR-OPS-02)
 LOOP_REPEAT_LIMIT = env("LOOP_REPEAT_LIMIT")
@@ -153,6 +175,7 @@ LLM_TIMEOUT_SECONDS = env("LLM_TIMEOUT_SECONDS")
 CONFIRMATION_EXPIRY_SECONDS = env("CONFIRMATION_EXPIRY_SECONDS")
 TASK_MAX_STEPS = env("TASK_MAX_STEPS")
 BROWSER_HEADLESS = env("BROWSER_HEADLESS")
+STALE_TASK_SECONDS = env("STALE_TASK_SECONDS")
 
 # Browser Profiles Root (FR-52..54)
 BROWSER_PROFILE_ROOT = Path(env("BROWSER_PROFILE_ROOT"))

@@ -256,6 +256,7 @@ class AgentAction(BaseModel):
     error_code = models.CharField(max_length=64, blank=True)
     duration_ms = models.PositiveIntegerField(null=True, blank=True)
     redacted = models.BooleanField(default=False)
+    model_used = models.CharField(max_length=64, blank=True)
 
     class Meta:
         verbose_name = "Agent Action"

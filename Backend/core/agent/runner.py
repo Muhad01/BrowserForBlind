@@ -8,7 +8,7 @@ from django.conf import settings
 
 from core.agent.browser import BrowserGateway
 from core.agent.events import EventPublisher, format_spoken_action
-from core.agent.llm import HistoryItem, LLMBadOutput, LLMClient, LLMUnavailable
+from core.agent.llm import HistoryItem, LLMBadOutput, LLMClient, LLMUnavailable, Proposal
 from core.agent.perception import PerceptionPort
 from core.agent.safety import SafetyPolicy, SafetyVerdict
 from core.agent.schema import NormalizedAction
@@ -94,7 +94,13 @@ class TaskRunner:
 
                 # Propose next single action from LLM
                 try:
-                    proposed = await self.llm.propose(task.goal, history, obs)
+                    proposal = await self.llm.propose(task.goal, history, obs)
+                    if isinstance(proposal, Proposal):
+                        proposed = proposal.action
+                        model_used = proposal.model
+                    else:
+                        proposed = proposal
+                        model_used = getattr(proposal, "model_used", "")
                 except (LLMUnavailable, LLMBadOutput):
                     raise
                 except Exception as err:
@@ -115,6 +121,7 @@ class TaskRunner:
                         reason=proposed.reason,
                         status=ActionStatus.REJECTED_INVALID,
                         error_code=validation.error_code.value,
+                        model_used=model_used,
                     )
                     consecutive_failures += 1
                     history.append(HistoryItem(
@@ -156,6 +163,7 @@ class TaskRunner:
                         safety_decision=SafetyDecision.BLOCK,
                         safety_rule=rule,
                         status=ActionStatus.BLOCKED,
+                        model_used=model_used,
                     )
                     consecutive_failures += 1
                     history.append(HistoryItem(
@@ -185,6 +193,7 @@ class TaskRunner:
                         safety_decision=SafetyDecision.REQUIRE_CONFIRMATION,
                         safety_rule=rule,
                         status=ActionStatus.AWAITING_CONFIRMATION,
+                        model_used=model_used,
                     )
                     await self._fail_task(task, ErrorCode.CONFIRMATION_UNAVAILABLE, detail=f"Confirmation required by {rule}.")
                     return
@@ -201,6 +210,7 @@ class TaskRunner:
                         safety_rule=rule,
                         status=ActionStatus.BLOCKED,
                         redacted=True,
+                        model_used=model_used,
                     )
                     await self._fail_task(task, ErrorCode.USER_INPUT_REQUIRED, detail=f"User input required by {rule}.")
                     return
@@ -217,6 +227,7 @@ class TaskRunner:
                         safety_decision=SafetyDecision.ALLOW,
                         safety_rule=rule,
                         status=ActionStatus.EXECUTED,
+                        model_used=model_used,
                     )
                     task.result_text = normalized.value
                     await task.asave(update_fields=["result_text", "updated_at"])
@@ -243,6 +254,7 @@ class TaskRunner:
                         safety_decision=SafetyDecision.ALLOW,
                         safety_rule=rule,
                         status=ActionStatus.EXECUTED,
+                        model_used=model_used,
                     )
                     consecutive_failures = 0
                     history.append(HistoryItem(sequence=sequence, action="describe", result=f"observed: {description}"))
@@ -276,6 +288,7 @@ class TaskRunner:
                         error_code=err_code,
                         duration_ms=exec_res.duration_ms,
                         redacted=is_redacted,
+                        model_used=model_used,
                     )
 
                     if exec_res.ok:
