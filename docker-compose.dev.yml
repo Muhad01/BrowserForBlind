@@ -1,0 +1,43 @@
+# ==============================================================================
+# CIGHT-BROWSER Local Development Infrastructure
+# NFR-OPS-05: Persistent volumes for database and cache state
+# ==============================================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cight-dev-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cight_db
+      POSTGRES_USER: cight
+      POSTGRES_PASSWORD: cight_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - cight_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cight -d cight_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: cight-dev-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - cight_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  cight_postgres_data:
+    name: cight_postgres_data
+  cight_redis_data:
+    name: cight_redis_data
+
