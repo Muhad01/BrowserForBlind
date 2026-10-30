@@ -73,7 +73,21 @@ def close_session(user: AbstractBaseUser | AnonymousUser, session_id: str | uuid
         session.status = SessionStatus.CLOSED
         session.closed_at = timezone.now()
         session.save(update_fields=["status", "closed_at", "updated_at"])
-        # TODO M2: release browser context in Chromium / Playwright
+
+        # M2: Cancel any running or pending tasks associated with this session
+        from core.enums import TaskStatus
+        from core.models import AgentTask
+
+        active_tasks = AgentTask.objects.filter(
+            session=session,
+            status__in=[TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING_CONFIRMATION],
+        )
+        for t in active_tasks:
+            if t.status == TaskStatus.PENDING:
+                t.transition_to(TaskStatus.CANCELLED)
+            else:
+                t.cancel_requested = True
+                t.save(update_fields=["cancel_requested", "updated_at"])
 
     return session
 

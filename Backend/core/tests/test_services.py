@@ -68,13 +68,24 @@ def test_user_cannot_close_another_users_session(user_alice, user_bob):
 @pytest.mark.django_db
 def test_create_task_creates_pending_task(user_alice):
     """FR-07/08: Creates a task in PENDING status bound to user's active session."""
-    task = create_task(user_alice, goal="Navigate to NUST website", mode=TaskMode.TASK)
+    task = create_task(user_alice, goal="Navigate to NUST website", mode=TaskMode.TASK, dispatch=False)
 
     assert task.user == user_alice
     assert task.status == TaskStatus.PENDING
     assert task.goal == "Navigate to NUST website"
     assert task.session.status == SessionStatus.ACTIVE
     assert task.session.user == user_alice
+
+
+@pytest.mark.django_db
+def test_create_task_refuses_concurrent_task_on_same_session(user_alice):
+    """Refuses to create a second task if one is already RUNNING on the same session."""
+    task1 = create_task(user_alice, goal="First task", dispatch=False)
+    task1.transition_to(TaskStatus.RUNNING)
+
+    from django.core.exceptions import ValidationError
+    with pytest.raises(ValidationError, match="currently has an active task"):
+        create_task(user_alice, goal="Second concurrent task", dispatch=False)
 
 
 @pytest.mark.django_db

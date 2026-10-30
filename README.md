@@ -25,6 +25,28 @@ The user speaks a goal; an AI Task Agent proposes one browser action at a time; 
 └── THIRD_PARTY_NOTICES.md   # Third-party software notices (browser-use, etc.)
 ```
 
+## Running the Celery Worker
+
+Celery's default prefork pool does not support Windows process management. Run the worker with the `solo` pool and concurrency 1:
+
+```bash
+cd Backend
+uv run celery -A cight worker --pool=solo --loglevel=info
+```
+
+## Running Dev Tasks (CLI)
+
+You can trigger and verify the agent pipeline end-to-end using the `run_task` management command:
+
+```bash
+cd Backend
+# Synchronous inline execution (prints all spoken feedback events to the console):
+uv run python manage.py run_task "Search Wikipedia for artificial intelligence" --user demo --sync
+
+# Asynchronous background execution (dispatched to the Celery worker):
+uv run python manage.py run_task "Search Wikipedia for artificial intelligence" --user demo
+```
+
 ## Security & Secrets
 
 Never commit `.env` files. They are listed in `.gitignore`. Use `.env.example` as a template for local environment configuration.
