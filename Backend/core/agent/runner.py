@@ -5,6 +5,7 @@ import uuid
 import structlog
 from asgiref.sync import sync_to_async
 from django.conf import settings
+from django.utils import timezone
 
 from core.agent.browser import BrowserGateway
 from core.agent.events import EventPublisher, format_spoken_action
@@ -56,8 +57,14 @@ class TaskRunner:
         step_count = task.step_count
         consecutive_failures = task.consecutive_failures
 
-        await self.browser.start(profile_dir)
         try:
+            try:
+                await self.browser.start(profile_dir)
+            except Exception as start_err:
+                logger.error("Browser launch failed", task_id=str(task.id), error=str(start_err))
+                await self._fail_task(task, ErrorCode.BROWSER_START_FAILED, detail=str(start_err))
+                return
+
             while True:
                 # FR-41/42: Check for cooperative cancellation
                 await task.arefresh_from_db()
@@ -71,6 +78,7 @@ class TaskRunner:
                         task,
                         "task_failed",
                         {
+                            "speak": task.error_message,
                             "error_code": ErrorCode.CANCELLED_BY_USER.value,
                             "error_message": task.error_message,
                         },
@@ -91,6 +99,10 @@ class TaskRunner:
                     state_hash=state_hash,
                     summary="",
                 )
+
+                # Touch updated_at heartbeat before LLM proposal (Part B.4)
+                task.updated_at = timezone.now()
+                await task.asave(update_fields=["updated_at"])
 
                 # Propose next single action from LLM
                 try:
@@ -115,7 +127,8 @@ class TaskRunner:
                     await AgentAction.objects.acreate(
                         task=task,
                         sequence=sequence,
-                        action_type=ActionType.WAIT,  # Fallback type for invalid actions
+                        action_type="",  # Blank for invalid actions (Part B.5)
+                        raw_action=proposed.action[:64],
                         target=proposed.target[:255],
                         value=proposed.value[:500],
                         reason=proposed.reason,
@@ -157,6 +170,7 @@ class TaskRunner:
                         task=task,
                         sequence=sequence,
                         action_type=normalized.action,
+                        raw_action=proposed.action[:64],
                         target=normalized.target[:255],
                         value=normalized.value[:500],
                         reason=normalized.reason,
@@ -187,6 +201,7 @@ class TaskRunner:
                         task=task,
                         sequence=sequence,
                         action_type=normalized.action,
+                        raw_action=proposed.action[:64],
                         target=normalized.target[:255],
                         value=normalized.value[:500],
                         reason=normalized.reason,
@@ -203,6 +218,7 @@ class TaskRunner:
                         task=task,
                         sequence=sequence,
                         action_type=normalized.action,
+                        raw_action=proposed.action[:64],
                         target=normalized.target[:255],
                         value="",
                         reason=normalized.reason,
@@ -221,6 +237,7 @@ class TaskRunner:
                         task=task,
                         sequence=sequence,
                         action_type=ActionType.STOP,
+                        raw_action=proposed.action[:64],
                         target="",
                         value=normalized.value[:500],
                         reason=normalized.reason,
@@ -229,6 +246,15 @@ class TaskRunner:
                         status=ActionStatus.EXECUTED,
                         model_used=model_used,
                     )
+                    await task.arefresh_from_db()
+                    if task.status in {
+                        TaskStatus.COMPLETED.value,
+                        TaskStatus.FAILED.value,
+                        TaskStatus.CANCELLED.value,
+                    }:
+                        logger.info("Task already terminal, skipping completion transition", task_id=str(task.id), status=task.status)
+                        return
+
                     task.result_text = normalized.value
                     await task.asave(update_fields=["result_text", "updated_at"])
                     await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
@@ -248,6 +274,7 @@ class TaskRunner:
                         task=task,
                         sequence=sequence,
                         action_type=ActionType.DESCRIBE,
+                        raw_action=proposed.action[:64],
                         target="",
                         value=description[:500],
                         reason=normalized.reason,
@@ -279,6 +306,7 @@ class TaskRunner:
                         task=task,
                         sequence=sequence,
                         action_type=normalized.action,
+                        raw_action=proposed.action[:64],
                         target=normalized.target[:255],
                         value=stored_value[:500],
                         reason=normalized.reason,
@@ -335,22 +363,39 @@ class TaskRunner:
             await self.browser.close()
 
     async def _fail_task(self, task: AgentTask, error_code: ErrorCode, detail: str = "") -> None:
-        """Fail task with standardized code and user-safe spoken message (NFR-SEC-06)."""
+        """Fail task with standardized code and user-safe spoken message (NFR-SEC-06). Never raises."""
         logger.error(
             "Task failed",
             task_id=str(task.id),
             error_code=error_code.value,
             detail=detail,
         )
-        task.error_code = error_code.value
-        task.error_message = USER_MESSAGES.get(error_code, "Task execution failed.")
-        await task.asave(update_fields=["error_code", "error_message", "updated_at"])
-        await sync_to_async(task.transition_to)(TaskStatus.FAILED)
-        await self.publisher.publish(
-            task,
-            "task_failed",
-            {
-                "error_code": error_code.value,
-                "error_message": task.error_message,
-            },
-        )
+        try:
+            await task.arefresh_from_db()
+            if task.status in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            }:
+                logger.info(
+                    "Task already terminal, skipping failure transition",
+                    task_id=str(task.id),
+                    status=task.status,
+                )
+                return
+
+            task.error_code = error_code.value
+            task.error_message = USER_MESSAGES.get(error_code, "Task execution failed.")
+            await task.asave(update_fields=["error_code", "error_message", "updated_at"])
+            await sync_to_async(task.transition_to)(TaskStatus.FAILED)
+            await self.publisher.publish(
+                task,
+                "task_failed",
+                {
+                    "speak": task.error_message,
+                    "error_code": error_code.value,
+                    "error_message": task.error_message,
+                },
+            )
+        except Exception as err:
+            logger.error("Error inside _fail_task suppressed", task_id=str(task.id), error=str(err))

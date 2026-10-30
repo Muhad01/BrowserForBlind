@@ -236,7 +236,8 @@ class AgentAction(BaseModel):
 
     task = models.ForeignKey(AgentTask, on_delete=models.CASCADE, related_name="actions")
     sequence = models.PositiveIntegerField()
-    action_type = models.CharField(max_length=16, choices=ActionType.choices)
+    action_type = models.CharField(max_length=16, choices=ActionType.choices, blank=True)
+    raw_action = models.CharField(max_length=64, blank=True)
     target = models.TextField(blank=True)
     value = models.TextField(blank=True)
     reason = models.TextField(blank=True)

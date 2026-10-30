@@ -29,6 +29,10 @@ def create_task(
 
     session = get_or_create_session(user)
 
+    # Reap any stale tasks on this session before active check (NFR-REL-02)
+    from core.services.recovery import reap_stale_tasks
+    reap_stale_tasks(session_id=session.id)
+
     # Prevent concurrent tasks from competing for the same Chromium profile lock
     has_active_task = AgentTask.objects.filter(
         session=session,

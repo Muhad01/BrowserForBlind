@@ -52,6 +52,11 @@ class Command(BaseCommand):
         parser.add_argument("--sync", action="store_true", help="Run inline synchronously without Celery")
 
     def handle(self, *args, **options):
+        from core.services.recovery import reap_stale_tasks
+        reaped = reap_stale_tasks()
+        if reaped > 0:
+            self.stdout.write(self.style.NOTICE(f"Reaped {reaped} stale task(s)."))
+
         goal = options["goal"]
         username = options["user"]
         is_sync = options["sync"]

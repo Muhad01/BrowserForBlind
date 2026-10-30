@@ -185,14 +185,16 @@ class BrowserUseGateway:
         await ev.event_result(raise_if_any=True, raise_if_none=False)
 
     async def close(self) -> None:
-        """Safely close browser session."""
-        if self.session:
+        """Safely close browser session (idempotent, with Windows transport drain)."""
+        if self.session is not None:
+            session = self.session
+            self.session = None
             try:
-                await self.session.kill()
+                await session.kill()
             except Exception as e:
                 logger.warning("Error killing browser session", error=str(e))
             finally:
-                self.session = None
+                await asyncio.sleep(0.3)
 
 
 class FakeBrowserGateway:

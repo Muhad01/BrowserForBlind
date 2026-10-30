@@ -273,3 +273,72 @@ async def test_runner_password_redaction(runner_task):
     # Verify event payloads do not contain secret
     for ev in publisher.events:
         assert "SuperSecretPassword123" not in str(ev["payload"])
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_browser_start_failure(runner_task):
+    """NFR-REL-02: Browser start failure fails task with BROWSER_START_FAILED and safely closes."""
+    class FailingStartBrowser(FakeBrowserGateway):
+        async def start(self, profile_dir):
+            raise RuntimeError("Chromium binary not found")
+
+    browser = FailingStartBrowser()
+    llm = FakeLLMClient(script=[ProposedAction(action="stop", value="Done")])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    await runner_task.arefresh_from_db()
+    assert runner_task.status == TaskStatus.FAILED
+    assert runner_task.error_code == ErrorCode.BROWSER_START_FAILED
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_fail_task_on_cancelled_does_not_raise(runner_task):
+    """_fail_task must never raise if task was already cancelled or terminal."""
+    runner_task.status = TaskStatus.CANCELLED
+    await runner_task.asave(update_fields=["status"])
+
+    browser = FakeBrowserGateway()
+    llm = FakeLLMClient()
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    # Call _fail_task directly - should log and return cleanly without raising InvalidTransitionError
+    await runner._fail_task(runner_task, ErrorCode.ACTION_FAILED, detail="Test failure")
+
+    await runner_task.arefresh_from_db()
+    assert runner_task.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_invalid_action_stores_raw_action_and_blank_action_type(runner_task):
+    """Part B.5: Invalid action stored with raw_action, empty action_type, never executed."""
+    obs = PageObservation(url="https://example.com", title="Test")
+    browser = FakeBrowserGateway(pages=[obs, obs])
+    # Invalid action 'dance'
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="dance", target="1", reason="Unsupported action"),
+        ProposedAction(action="stop", value="Finished"),
+    ])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    act = await AgentAction.objects.filter(task=runner_task, sequence=1).afirst()
+    assert act.status == ActionStatus.REJECTED_INVALID
+    assert act.action_type == ""
+    assert act.raw_action == "dance"
+    assert len(browser.executed_actions) == 0
+

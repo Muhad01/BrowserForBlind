@@ -38,23 +38,41 @@ def run_agent_task(self, task_id: str) -> None:
     # Atomic transition to RUNNING per FR-09
     task.transition_to(TaskStatus.RUNNING)
 
-    llm = GeminiClient()
-    browser = BrowserUseGateway()
-    policy = PlaceholderSafetyPolicy()
-    perception = PlaceholderPerceptionAgent()
-    publisher = ChannelsEventPublisher()
+    try:
+        llm = GeminiClient()
+        browser = BrowserUseGateway()
+        policy = PlaceholderSafetyPolicy()
+        perception = PlaceholderPerceptionAgent()
+        publisher = ChannelsEventPublisher()
 
-    runner = TaskRunner(
-        task_id=task.id,
-        llm=llm,
-        browser=browser,
-        policy=policy,
-        perception=perception,
-        publisher=publisher,
-    )
+        runner = TaskRunner(
+            task_id=task.id,
+            llm=llm,
+            browser=browser,
+            policy=policy,
+            perception=perception,
+            publisher=publisher,
+        )
 
-    import sys
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        import sys
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    asyncio.run(runner.run())
+        asyncio.run(runner.run())
+    except Exception as err:
+        logger.exception("Escaped exception in Celery task", task_id=str(task.id), error=str(err))
+        task.refresh_from_db()
+        if task.status not in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }:
+            from core.errors import USER_MESSAGES, ErrorCode
+
+            task.error_code = ErrorCode.INTERNAL_ERROR.value
+            task.error_message = USER_MESSAGES.get(ErrorCode.INTERNAL_ERROR, "An internal error occurred.")
+            task.save(update_fields=["error_code", "error_message", "updated_at"])
+            try:
+                task.transition_to(TaskStatus.FAILED)
+            except Exception as trans_err:
+                logger.error("Failed transition to FAILED in Celery safety net", error=str(trans_err))
