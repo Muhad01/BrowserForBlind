@@ -26,6 +26,9 @@ class ErrorCode(StrEnum):
     USER_INPUT_REQUIRED = "user_input_required"
     CANCELLED_BY_USER = "cancelled_by_user"
     TASK_INTERRUPTED = "task_interrupted"
+    INVALID_EVENT = "invalid_event"
+    TASK_ALREADY_RUNNING = "task_already_running"
+    INVALID_REQUEST = "invalid_request"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -46,6 +49,9 @@ USER_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.USER_INPUT_REQUIRED: "This field requires direct user input such as a password or security code.",
     ErrorCode.CANCELLED_BY_USER: "The task was cancelled as requested.",
     ErrorCode.TASK_INTERRUPTED: "Your last task was interrupted. Please give the command again.",
+    ErrorCode.INVALID_EVENT: "Sorry, I didn't understand that request.",
+    ErrorCode.TASK_ALREADY_RUNNING: "I'm still working on your last request. Say stop to cancel it.",
+    ErrorCode.INVALID_REQUEST: "The request payload was invalid.",
     ErrorCode.INTERNAL_ERROR: "An internal error occurred while executing your task. Please try again.",
 }
 
