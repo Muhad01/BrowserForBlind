@@ -52,8 +52,8 @@ export class WsClient {
         globalThis.crypto?.randomUUID?.() ??
         `req-${Math.random().toString(16).slice(2)}`);
     this.now = deps.now ?? (() => Date.now());
-    this.setTimeoutFn = deps.setTimeoutFn ?? setTimeout;
-    this.clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout;
+    this.setTimeoutFn = deps.setTimeoutFn ?? ((handler, timeout) => globalThis.setTimeout(handler, timeout));
+    this.clearTimeoutFn = deps.clearTimeoutFn ?? ((id) => globalThis.clearTimeout(id));
     this.wsUrl =
       deps.wsUrl ??
       process.env.NEXT_PUBLIC_WS_URL ??
