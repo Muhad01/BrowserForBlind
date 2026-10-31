@@ -46,6 +46,43 @@ Three terminals on Windows:
 
 Then open `http://localhost:8000/dev/ws-test/` in your browser to interact with the developer test workbench.
 
+## Running the voice interface
+
+Four terminals on Windows. Use **Google Chrome** (Web Speech recognition is Chrome-first; NFR-COMP-01).
+
+1. **Infrastructure**:
+   ```bash
+   docker compose -f docker-compose.dev.yml up -d
+   ```
+2. **ASGI Web & WebSocket Server** (Daphne):
+   ```bash
+   cd Backend
+   uv run python manage.py runserver
+   ```
+3. **Background Browser Celery Worker**:
+   ```bash
+   cd Backend
+   uv run celery -A cight worker --pool=solo --loglevel=info
+   ```
+4. **Voice UI**:
+   ```bash
+   cd Frontend
+   npm install
+   npm run dev
+   ```
+
+Then open `http://localhost:3000` in Google Chrome. Copy `Frontend/.env.local.example` to `Frontend/.env.local` if you need to change the WebSocket URL.
+
+### How to use (blind users)
+
+- Press **Enter** to start (this unlocks audio).
+- Sign in if asked. The Django session cookie keeps you signed in after that.
+- Press **Space** and say what you want to do, for example: "Search Wikipedia for artificial intelligence".
+- Press **Escape** to stop the current task.
+- Press **R** to repeat the last message.
+- Press **H** for help.
+- If this browser cannot listen, expand **Type a command instead** and type the same request.
+
 ## Running the Celery Worker directly
 
 Celery's default prefork pool does not support Windows process management. Run the worker with the `solo` pool and concurrency 1:
