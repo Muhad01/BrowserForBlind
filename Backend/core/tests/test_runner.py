@@ -196,6 +196,7 @@ async def test_runner_cancel_requested_mid_run(runner_task):
     assert action is not None
     assert action.status == ActionStatus.SKIPPED
     assert len(browser.executed_actions) == 0
+    assert all(event["event"] != "browser_action" for event in publisher.events)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -452,6 +453,7 @@ async def test_runner_event_contract(runner_task):
     assert len(publisher.events) > 0
     # 1. Event ordering
     assert publisher.events[0]["event"] == "task_started"
+    assert publisher.events[0]["payload"]["brief"] == "Working on it."
     assert publisher.events[-1]["event"] == "task_completed"
 
     # 2. No agent_status because title never changed

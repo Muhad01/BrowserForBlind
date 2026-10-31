@@ -47,8 +47,16 @@ def trim_accessible_name(text: str) -> str:
     if dup_match:
         s = s[: dup_match.end(1)].strip()
 
+    # Prefer the first label when a capitalised word starts a description.
+    desc_match = re.search(r"(?<=[a-z])\s+([A-Z][a-z]+)(?:\s+[a-z])", s)
+    if desc_match:
+        s = s[: desc_match.start()].strip()
+
     if len(s) > 40:
-        s = s[:40].strip()
+        cut = s[:40]
+        if len(s) > 40 and s[40] not in " \t\n" and " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        s = cut.strip()
 
     return s
 

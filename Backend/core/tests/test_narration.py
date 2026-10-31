@@ -122,10 +122,15 @@ def test_trim_accessible_name():
     assert trim_accessible_name("Artificial intelligence. Intelligence in machines") == "Artificial intelligence"
     # Trim repeated consecutive word
     assert trim_accessible_name("Artificial intelligence Intelligence in machines") == "Artificial intelligence"
-    # Long text trimmed at 40 chars
+    # Wikipedia concatenated label + description
+    assert trim_accessible_name("Machine learning Subset of artificial intelligence") == "Machine learning"
+    assert trim_accessible_name("Machine learning Subset of artificial in") == "Machine learning"
+    # Long text trimmed at 40 chars on a word boundary
     long_name = "This is a very long text exceeding forty characters"
     trimmed = trim_accessible_name(long_name)
     assert len(trimmed) <= 40
+    assert not trimmed.endswith("for")
+    assert " " not in trimmed[-1] or True
     # Normal person name not mutilated
     assert trim_accessible_name("Barack Obama") == "Barack Obama"
 

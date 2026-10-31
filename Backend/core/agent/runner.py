@@ -57,7 +57,11 @@ class TaskRunner:
 
         # FR-19, FR-59: Announce task start
         start_speak = format_task_started(task.goal)
-        await self.publisher.publish(task, "task_started", {"speak": start_speak, "goal": task.goal})
+        await self.publisher.publish(
+            task,
+            "task_started",
+            {"speak": start_speak, "brief": "Working on it.", "goal": task.goal},
+        )
 
         max_steps = getattr(settings, "TASK_MAX_STEPS", 50)
         failure_limit = getattr(settings, "CONSECUTIVE_FAILURE_LIMIT", 3)
@@ -310,6 +314,42 @@ class TaskRunner:
                     })
                     return
 
+                # Announce browser_action only after the pre-execution cancellation check.
+                await task.arefresh_from_db()
+                if task.cancel_requested:
+                    logger.info("Cancellation detected right before browser execution", task_id=str(task.id))
+                    stored_value = ""
+                    if not (normalized.action == ActionType.TYPE and "sensitive" in rule.lower()):
+                        stored_value = normalized.value
+                    await AgentAction.objects.acreate(
+                        task=task,
+                        sequence=sequence,
+                        action_type=normalized.action,
+                        raw_action=proposed.action[:64],
+                        target=normalized.target[:255],
+                        value=stored_value[:500],
+                        reason=normalized.reason,
+                        safety_decision=SafetyDecision.ALLOW,
+                        safety_rule=rule,
+                        status=ActionStatus.SKIPPED,
+                        model_used=model_used,
+                    )
+                    await sync_to_async(task.transition_to)(TaskStatus.CANCELLED)
+                    task.error_code = ErrorCode.CANCELLED_BY_USER.value
+                    task.error_message = USER_MESSAGES[ErrorCode.CANCELLED_BY_USER]
+                    await task.asave(update_fields=["error_code", "error_message", "updated_at"])
+                    cancel_speak = format_task_cancelled()
+                    await self.publisher.publish(
+                        task,
+                        "task_failed",
+                        {
+                            "speak": cancel_speak,
+                            "error_code": ErrorCode.CANCELLED_BY_USER.value,
+                            "error_message": task.error_message,
+                        },
+                    )
+                    return
+
                 if normalized.action == ActionType.DESCRIBE:
                     spoken_msg = format_spoken_action(normalized, obs)
                     await self.publisher.publish(task, "browser_action", {
@@ -353,39 +393,6 @@ class TaskRunner:
                     if normalized.action == ActionType.TYPE and "sensitive" in rule.lower():
                         is_redacted = True
                         stored_value = ""
-
-                    # Prompt cancellation check right before browser execution (Step 6, FR-41/42)
-                    await task.arefresh_from_db()
-                    if task.cancel_requested:
-                        logger.info("Cancellation detected right before browser execution", task_id=str(task.id))
-                        await AgentAction.objects.acreate(
-                            task=task,
-                            sequence=sequence,
-                            action_type=normalized.action,
-                            raw_action=proposed.action[:64],
-                            target=normalized.target[:255],
-                            value=stored_value[:500],
-                            reason=normalized.reason,
-                            safety_decision=SafetyDecision.ALLOW,
-                            safety_rule=rule,
-                            status=ActionStatus.SKIPPED,
-                            model_used=model_used,
-                        )
-                        await sync_to_async(task.transition_to)(TaskStatus.CANCELLED)
-                        task.error_code = ErrorCode.CANCELLED_BY_USER.value
-                        task.error_message = USER_MESSAGES[ErrorCode.CANCELLED_BY_USER]
-                        await task.asave(update_fields=["error_code", "error_message", "updated_at"])
-                        cancel_speak = format_task_cancelled()
-                        await self.publisher.publish(
-                            task,
-                            "task_failed",
-                            {
-                                "speak": cancel_speak,
-                                "error_code": ErrorCode.CANCELLED_BY_USER.value,
-                                "error_message": task.error_message,
-                            },
-                        )
-                        return
 
                     exec_res = await self.browser.execute(normalized)
                     status = ActionStatus.EXECUTED if exec_res.ok else ActionStatus.FAILED
