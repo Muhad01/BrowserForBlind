@@ -3,13 +3,16 @@
 import { useEffect, useRef } from "react";
 
 import { fetchCurrentTask } from "@/lib/api";
-import { frameSpeak, routeFrame, speechPriorityForEvent } from "@/lib/routeFrame";
+import { finishedWhileDisconnectedSpeak } from "@/lib/disconnectNarration";
+import { narrateServerFrame } from "@/lib/narrationPolicy";
 import { RECONNECTED_SPEAK, SIGN_IN_AGAIN_SPEAK } from "@/lib/phrases";
+import { routeFrame } from "@/lib/routeFrame";
 import { WsClient, type ConnectionStatus } from "@/lib/wsClient";
 import type { TaskSnapshot } from "@/lib/events";
 import { useAuthStore } from "@/stores/authStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useTaskStore } from "@/stores/taskStore";
+import { useVoiceStore } from "@/stores/voiceStore";
 
 interface UseRealtimeOptions {
   enabled: boolean;
@@ -40,11 +43,13 @@ export function useRealtime({ enabled, speak }: UseRealtimeOptions) {
         if (!frame) {
           return;
         }
-        const text = frameSpeak(frame);
-        const priority = speechPriorityForEvent(frame.event);
-        if (text && priority) {
-          speakRef.current(text, { priority, event: frame.event });
+        if (frame.event === "task_started" || frame.request_id) {
+          useVoiceStore.getState().endProcessing(frame.request_id);
         }
+        if (frame.event === "task_started") {
+          useVoiceStore.getState().endProcessing();
+        }
+        narrateServerFrame(frame, speakRef.current);
       },
       onAuthLost: () => {
         useAuthStore.getState().clearAuth();
@@ -55,13 +60,18 @@ export function useRealtime({ enabled, speak }: UseRealtimeOptions) {
           return;
         }
         try {
+          const previous = useTaskStore.getState().task;
           const data = await fetchCurrentTask<{ task: TaskSnapshot | null }>();
           useTaskStore.getState().replaceFromServer(data.task);
+          const disconnectedResult = finishedWhileDisconnectedSpeak(previous, data.task);
+          if (disconnectedResult) {
+            speakRef.current(disconnectedResult, { priority: "assertive", event: "local" });
+          }
         } catch {
           // Backend remains authoritative; a later frame or retry will refresh.
         }
         if (disconnectedForMs > 3000) {
-          speakRef.current(RECONNECTED_SPEAK, { priority: "assertive" });
+          speakRef.current(RECONNECTED_SPEAK, { priority: "assertive", event: "local" });
         }
       },
     });

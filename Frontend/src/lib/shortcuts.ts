@@ -2,12 +2,16 @@
 
 export type ShortcutAction =
   | "toggle-listen"
+  | "listen-start"
+  | "listen-stop"
   | "stop"
   | "repeat"
   | "help"
   | "confirm-yes"
   | "confirm-no"
-  | "settings";
+  | "settings"
+  | "toggle-verbosity"
+  | "toggle-talk-mode";
 
 export function isTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -45,6 +49,12 @@ export function shortcutFromKeyboardEvent(event: KeyboardEvent): ShortcutAction 
   }
   if (key === "s") {
     return "settings";
+  }
+  if (key === "v") {
+    return "toggle-verbosity";
+  }
+  if (key === "t") {
+    return "toggle-talk-mode";
   }
   return null;
 }

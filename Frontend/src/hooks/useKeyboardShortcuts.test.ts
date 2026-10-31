@@ -1,10 +1,16 @@
 import { renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { isTextInputTarget, shortcutFromKeyboardEvent } from "@/lib/shortcuts";
+import { resetStores } from "@/test/resetStores";
+import { useSpeechStore } from "@/stores/speechStore";
 
 describe("keyboard shortcuts", () => {
+  beforeEach(() => {
+    resetStores();
+  });
+
   it("ignores shortcuts while typing in an input", () => {
     const input = document.createElement("input");
     expect(isTextInputTarget(input)).toBe(true);
@@ -20,6 +26,20 @@ describe("keyboard shortcuts", () => {
     expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "y" }))).toBe("confirm-yes");
     expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "n" }))).toBe("confirm-no");
     expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "s" }))).toBe("settings");
+    expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "v" }))).toBe("toggle-verbosity");
+    expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "t" }))).toBe("toggle-talk-mode");
+  });
+
+  it("hold mode starts on keydown, ignores repeat, and stops on keyup without abort semantics", () => {
+    useSpeechStore.getState().setSettings({ talkMode: "hold" });
+    const onAction = vi.fn();
+    renderHook(() => useKeyboardShortcuts(true, onAction));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", repeat: true, bubbles: true }));
+    expect(onAction).not.toHaveBeenCalled();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", repeat: false, bubbles: true }));
+    expect(onAction).toHaveBeenCalledWith("listen-start");
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true }));
+    expect(onAction).toHaveBeenCalledWith("listen-stop");
   });
 
   it("does not fire while focus is in a text field", () => {

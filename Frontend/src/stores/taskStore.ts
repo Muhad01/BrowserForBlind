@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { markTaskResultHeard } from "@/lib/disconnectNarration";
 import {
   isSrsEvent,
   isServerFrame,
@@ -67,7 +68,7 @@ function applyStatus(task: TaskSnapshot | null, frame: ServerFrame): TaskSnapsho
       pending_confirmation: null,
     };
   }
-  if (frame.event === "task_completed") {
+    if (frame.event === "task_completed") {
     return {
       ...base,
       status: "completed",
@@ -109,6 +110,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
 
     const speak = speakFromPayload(raw.payload);
+    if (raw.event === "task_completed" || raw.event === "task_failed") {
+      markTaskResultHeard(raw.task_id);
+    }
     const logged: LoggedFrame = {
       event: raw.event,
       task_id: raw.task_id,

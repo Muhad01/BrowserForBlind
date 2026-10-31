@@ -49,7 +49,7 @@ describe("accessibility", () => {
         client={null}
         onToggleListen={() => undefined}
         onRepeat={() => undefined}
-        onCancelSpeech={() => undefined}
+        onInterrupt={() => undefined}
         onSpeakHelp={() => undefined}
       />,
     );

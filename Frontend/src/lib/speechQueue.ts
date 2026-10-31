@@ -11,6 +11,7 @@ export interface SpeechItem {
 export class SpeechQueue {
   polite: SpeechItem[] = [];
   current: SpeechItem | null = null;
+  held: SpeechItem[] = [];
 
   enqueue(item: SpeechItem): { cancelCurrent: boolean; next: SpeechItem | null; dropped: SpeechItem[] } {
     if (item.priority === "assertive") {
@@ -34,9 +35,37 @@ export class SpeechQueue {
     return next;
   }
 
-  clear(): void {
+  hold(item: SpeechItem): void {
+    this.held.push(item);
+  }
+
+  holdCurrentIfAssertive(): void {
+    if (this.current?.priority === "assertive") {
+      this.held.push(this.current);
+    }
+    this.current = null;
+  }
+
+  parkUnplayed(): void {
+    this.holdCurrentIfAssertive();
+    if (this.polite.length) {
+      this.held.push(...this.polite);
+      this.polite = [];
+    }
+  }
+
+  takeHeld(): SpeechItem[] {
+    const items = this.held;
+    this.held = [];
+    return items;
+  }
+
+  clear(options: { held?: boolean } = { held: true }): void {
     this.polite = [];
     this.current = null;
+    if (options.held !== false) {
+      this.held = [];
+    }
   }
 
   private dropOverflow(): SpeechItem[] {

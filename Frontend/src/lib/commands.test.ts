@@ -28,18 +28,60 @@ describe("outgoing commands", () => {
     });
   });
 
-  it("Escape sends stop_task through the shortcut handler", () => {
+  function renderActions() {
+    return renderHook(() =>
+      useConsoleActions({
+        client,
+        speak: vi.fn(),
+        cancelSpeech: vi.fn(),
+        closeMic: vi.fn(),
+        startListening: vi.fn(),
+        stopListening: vi.fn(),
+        toggleListening: vi.fn(),
+        repeatLast: vi.fn(),
+      }),
+    );
+  }
+
+  it("Escape clears speech including held items and sends stop_task when a task is active", () => {
+    const cancelSpeech = vi.fn();
+    const closeMic = vi.fn();
+    useTaskStore.setState({
+      task: {
+        id: "t1",
+        goal: "search",
+        mode: "task",
+        status: "running",
+        result_text: null,
+        error_code: null,
+        error_message: null,
+        final_url: null,
+        step_count: 1,
+        created_at: null,
+        finished_at: null,
+        pending_confirmation: null,
+      },
+    });
     const { result } = renderHook(() =>
-      useConsoleActions(client, vi.fn(), vi.fn(), vi.fn(), vi.fn()),
+      useConsoleActions({
+        client,
+        speak: vi.fn(),
+        cancelSpeech,
+        closeMic,
+        startListening: vi.fn(),
+        stopListening: vi.fn(),
+        toggleListening: vi.fn(),
+        repeatLast: vi.fn(),
+      }),
     );
     result.current.handleShortcut("stop");
+    expect(closeMic).toHaveBeenCalled();
+    expect(cancelSpeech).toHaveBeenCalled();
     expect(send).toHaveBeenCalledWith("stop_task", { task_id: null });
   });
 
   it("Y and N send confirmation_response only when a confirmation is pending", () => {
-    const { result } = renderHook(() =>
-      useConsoleActions(client, vi.fn(), vi.fn(), vi.fn(), vi.fn()),
-    );
+    const { result } = renderActions();
     result.current.handleShortcut("confirm-yes");
     result.current.handleShortcut("confirm-no");
     expect(send).not.toHaveBeenCalled();

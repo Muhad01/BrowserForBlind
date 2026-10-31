@@ -106,6 +106,22 @@
   margin: 0.7rem 0;
 }
 
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin: 0.7rem 0;
+  padding: 0.7rem 0.8rem;
+  border: 2px solid var(--border);
+}
+
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.4rem;
+}
+
 .input,
 .select {
   min-height: 2.8rem;

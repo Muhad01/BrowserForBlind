@@ -1,11 +1,15 @@
 import { create } from "zustand";
 
 export type OutputMode = "voice" | "screenreader";
+export type Verbosity = "brief" | "detailed";
+export type TalkMode = "press" | "hold";
 
 export interface SpeechSettings {
   rate: number;
   voiceURI: string;
   outputMode: OutputMode;
+  verbosity: Verbosity;
+  talkMode: TalkMode;
 }
 
 const STORAGE_KEY = "cight-speech-settings";
@@ -13,6 +17,8 @@ const DEFAULT_SETTINGS: SpeechSettings = {
   rate: 1.1,
   voiceURI: "",
   outputMode: "voice",
+  verbosity: "brief",
+  talkMode: "press",
 };
 
 function clampRate(rate: number): number {
@@ -33,6 +39,8 @@ export function loadSpeechSettings(): SpeechSettings {
       rate: clampRate(typeof parsed.rate === "number" ? parsed.rate : DEFAULT_SETTINGS.rate),
       voiceURI: typeof parsed.voiceURI === "string" ? parsed.voiceURI : "",
       outputMode: parsed.outputMode === "screenreader" ? "screenreader" : "voice",
+      verbosity: parsed.verbosity === "detailed" ? "detailed" : "brief",
+      talkMode: parsed.talkMode === "hold" ? "hold" : "press",
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -49,6 +57,8 @@ export function persistSpeechSettings(settings: SpeechSettings): void {
 
 interface SpeechState {
   lastSpoken: string;
+  lastAssertive: string;
+  lastSpokenAt: number;
   speaking: boolean;
   settings: SpeechSettings;
   politeLive: string;
@@ -57,6 +67,8 @@ interface SpeechState {
   helpOpen: boolean;
   settingsOpen: boolean;
   setLastSpoken: (text: string) => void;
+  setLastAssertive: (text: string) => void;
+  markSpokenAt: () => void;
   setSpeaking: (speaking: boolean) => void;
   setLive: (text: string, mode: "polite" | "assertive") => void;
   setSettings: (patch: Partial<SpeechSettings>) => void;
@@ -67,6 +79,8 @@ interface SpeechState {
 
 export const useSpeechStore = create<SpeechState>((set) => ({
   lastSpoken: "",
+  lastAssertive: "",
+  lastSpokenAt: 0,
   speaking: false,
   settings: { ...DEFAULT_SETTINGS },
   politeLive: "",
@@ -75,6 +89,8 @@ export const useSpeechStore = create<SpeechState>((set) => ({
   helpOpen: false,
   settingsOpen: false,
   setLastSpoken: (text) => set({ lastSpoken: text }),
+  setLastAssertive: (text) => set({ lastAssertive: text }),
+  markSpokenAt: () => set({ lastSpokenAt: Date.now() }),
   setSpeaking: (speaking) => set({ speaking }),
   setLive: (text, mode) =>
     set(mode === "assertive" ? { assertiveLive: text } : { politeLive: text }),

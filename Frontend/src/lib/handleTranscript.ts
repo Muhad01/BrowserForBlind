@@ -29,7 +29,10 @@ export function handleTranscript(text: string, handlers: TranscriptHandlers): "e
 }
 
 export function sendVoiceCommand(client: WsClient | null, text: string): void {
-  client?.send("voice_command", { text });
+  const envelope = client?.send("voice_command", { text });
+  if (envelope) {
+    useVoiceStore.getState().beginProcessing(envelope.request_id);
+  }
 }
 
 export function sendStopTask(client: WsClient | null): void {

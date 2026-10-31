@@ -2,16 +2,27 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+import { compactHeld, GATE_RELEASE_MS, HEARTBEAT_MS, isSpeechGated } from "@/lib/speechGate";
+import { STILL_WORKING } from "@/lib/phrases";
 import { SpeechQueue, type SpeechItem, type SpeechPriority } from "@/lib/speechQueue";
 import { loadSpeechSettings, useSpeechStore } from "@/stores/speechStore";
+import { useTaskStore } from "@/stores/taskStore";
+import { useVoiceStore } from "@/stores/voiceStore";
 
 function canUseSynthesis(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
 }
 
+function logSpoken(text: string): void {
+  if (process.env.NODE_ENV === "development") {
+    console.log("[SPOKEN]", text);
+  }
+}
+
 export function useSpeechSynthesis() {
   const queueRef = useRef(new SpeechQueue());
   const playRef = useRef<(item: SpeechItem | null) => void>(() => undefined);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     useSpeechStore.getState().setSettings(loadSpeechSettings());
@@ -31,15 +42,27 @@ export function useSpeechSynthesis() {
     };
   }, []);
 
+  const announce = useCallback((item: SpeechItem, liveText?: string) => {
+    useSpeechStore.getState().setLastSpoken(item.text);
+    if (item.priority === "assertive") {
+      useSpeechStore.getState().setLastAssertive(item.text);
+    }
+    useSpeechStore.getState().setLive(liveText ?? item.text, item.priority);
+  }, []);
+
   useEffect(() => {
     playRef.current = (item) => {
       if (!item) {
         useSpeechStore.getState().setSpeaking(false);
         return;
       }
-      useSpeechStore.getState().setLastSpoken(item.text);
-      useSpeechStore.getState().setLive(item.text, item.priority);
-      useSpeechStore.getState().setSpeaking(true);
+      announce(item);
+      if (isSpeechGated()) {
+        queueRef.current.hold(item);
+        queueRef.current.current = null;
+        useSpeechStore.getState().setSpeaking(false);
+        return;
+      }
 
       const settings = useSpeechStore.getState().settings;
       if (settings.outputMode === "screenreader" || !canUseSynthesis()) {
@@ -52,6 +75,13 @@ export function useSpeechSynthesis() {
         return;
       }
 
+      if (isSpeechGated()) {
+        queueRef.current.hold(item);
+        queueRef.current.current = null;
+        useSpeechStore.getState().setSpeaking(false);
+        return;
+      }
+
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(item.text);
       utterance.rate = settings.rate;
@@ -61,37 +91,109 @@ export function useSpeechSynthesis() {
         utterance.voice = selected;
       }
       utterance.onend = () => {
+        if (isSpeechGated()) {
+          useSpeechStore.getState().setSpeaking(false);
+          return;
+        }
         const next = queueRef.current.shiftNext();
         playRef.current(next);
       };
       utterance.onerror = () => {
         useSpeechStore.getState().setSpeaking(false);
       };
+      if (isSpeechGated()) {
+        queueRef.current.hold(item);
+        queueRef.current.current = null;
+        useSpeechStore.getState().setSpeaking(false);
+        return;
+      }
+      useSpeechStore.getState().setSpeaking(true);
+      useSpeechStore.getState().markSpokenAt();
+      logSpoken(item.text);
       window.speechSynthesis.speak(utterance);
     };
+  }, [announce]);
+
+  const flushHeld = useCallback(() => {
+    if (isSpeechGated()) {
+      return;
+    }
+    const verbosity = useSpeechStore.getState().settings.verbosity;
+    const items = compactHeld(queueRef.current.takeHeld(), verbosity);
+    for (const item of items) {
+      const result = queueRef.current.enqueue(item);
+      if (result.next) {
+        playRef.current(result.next);
+      }
+    }
   }, []);
 
-  const speak = useCallback((text: string, options: { priority?: SpeechPriority; event?: string } = {}) => {
+  useEffect(() => {
+    const unsub = useVoiceStore.subscribe((state, previous) => {
+      const gated = state.listening || state.processing;
+      const wasGated = previous.listening || previous.processing;
+      if (gated) {
+        if (flushTimerRef.current) {
+          clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        return;
+      }
+      if (wasGated && !gated) {
+        if (flushTimerRef.current) {
+          clearTimeout(flushTimerRef.current);
+        }
+        flushTimerRef.current = setTimeout(() => {
+          flushTimerRef.current = null;
+          flushHeld();
+        }, GATE_RELEASE_MS);
+      }
+    });
+    return () => {
+      unsub();
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+      }
+    };
+  }, [flushHeld]);
+
+  const speak = useCallback((text: string, options: { priority?: SpeechPriority; event?: string; liveText?: string } = {}) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
     }
-    const priority = options.priority ?? "polite";
-    const result = queueRef.current.enqueue({
+    const item: SpeechItem = {
       text: trimmed,
-      event: options.event,
-      priority,
-    });
+      event: options.event ?? "local",
+      priority: options.priority ?? "polite",
+    };
+    announce(item, options.liveText);
+    if (useSpeechStore.getState().settings.verbosity === "brief" && item.event === "browser_action") {
+      return;
+    }
+    if (isSpeechGated()) {
+      queueRef.current.hold(item);
+      return;
+    }
+    const result = queueRef.current.enqueue(item);
     if (result.cancelCurrent && canUseSynthesis()) {
       window.speechSynthesis.cancel();
     }
     if (result.next) {
       playRef.current(result.next);
     }
+  }, [announce]);
+
+  const bargeIn = useCallback(() => {
+    queueRef.current.parkUnplayed();
+    if (canUseSynthesis()) {
+      window.speechSynthesis.cancel();
+    }
+    useSpeechStore.getState().setSpeaking(false);
   }, []);
 
-  const cancel = useCallback(() => {
-    queueRef.current.clear();
+  const cancel = useCallback((options: { held?: boolean } = { held: true }) => {
+    queueRef.current.clear(options);
     if (canUseSynthesis()) {
       window.speechSynthesis.cancel();
     }
@@ -99,10 +201,32 @@ export function useSpeechSynthesis() {
   }, []);
 
   const repeatLast = useCallback(() => {
-    const last = useSpeechStore.getState().lastSpoken;
+    const lastAssertive = useSpeechStore.getState().lastAssertive;
+    const last = lastAssertive || useSpeechStore.getState().lastSpoken;
     if (last) {
-      speak(last, { priority: "assertive" });
+      speak(last, { priority: "assertive", event: "local" });
     }
+  }, [speak]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (useSpeechStore.getState().settings.verbosity !== "brief") {
+        return;
+      }
+      if (isSpeechGated()) {
+        return;
+      }
+      const status = useTaskStore.getState().task?.status;
+      if (status !== "running" && status !== "pending") {
+        return;
+      }
+      const lastSpokenAt = useSpeechStore.getState().lastSpokenAt;
+      if (!lastSpokenAt || Date.now() - lastSpokenAt < HEARTBEAT_MS) {
+        return;
+      }
+      speak(STILL_WORKING, { priority: "polite", event: "local" });
+    }, 1000);
+    return () => clearInterval(timer);
   }, [speak]);
 
   const unlock = useCallback(() => {
@@ -116,5 +240,5 @@ export function useSpeechSynthesis() {
     window.speechSynthesis.cancel();
   }, []);
 
-  return { speak, cancel, repeatLast, unlock };
+  return { speak, cancel, bargeIn, repeatLast, unlock };
 }

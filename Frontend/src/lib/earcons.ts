@@ -40,8 +40,11 @@ function playTone(frequency: number, durationSeconds: number): void {
   }
 }
 
-export function playListenStart(): void {
+export function playListenStart(delayMs = 150): Promise<void> {
   playTone(880, 0.12);
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
 }
 
 export function playListenStop(): void {

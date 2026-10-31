@@ -53,10 +53,10 @@ export const POLITE_EVENTS: ReadonlySet<string> = new Set([
   "task_started",
   "browser_action",
   "agent_status",
-  "perception_result",
 ]);
 
 export const ASSERTIVE_EVENTS: ReadonlySet<string> = new Set([
+  "perception_result",
   "task_completed",
   "task_failed",
   "confirmation_required",

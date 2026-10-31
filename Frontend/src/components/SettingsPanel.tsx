@@ -14,6 +14,8 @@ export function SettingsPanel() {
   const rateId = useId();
   const voiceId = useId();
   const modeId = useId();
+  const verbosityId = useId();
+  const talkModeId = useId();
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -64,6 +66,52 @@ export function SettingsPanel() {
           onChange={(event) => useSpeechStore.getState().setSettings({ rate: Number(event.target.value) })}
         />
       </div>
+      <fieldset className={styles.fieldset} aria-labelledby={verbosityId}>
+        <legend id={verbosityId}>Narration detail</legend>
+        <label className={styles.radio}>
+          <input
+            type="radio"
+            name="verbosity"
+            value="brief"
+            checked={settings.verbosity === "brief"}
+            onChange={() => useSpeechStore.getState().setSettings({ verbosity: "brief" })}
+          />
+          Brief
+        </label>
+        <label className={styles.radio}>
+          <input
+            type="radio"
+            name="verbosity"
+            value="detailed"
+            checked={settings.verbosity === "detailed"}
+            onChange={() => useSpeechStore.getState().setSettings({ verbosity: "detailed" })}
+          />
+          Detailed
+        </label>
+      </fieldset>
+      <fieldset className={styles.fieldset} aria-labelledby={talkModeId}>
+        <legend id={talkModeId}>Talk mode</legend>
+        <label className={styles.radio}>
+          <input
+            type="radio"
+            name="talkMode"
+            value="press"
+            checked={settings.talkMode === "press"}
+            onChange={() => useSpeechStore.getState().setSettings({ talkMode: "press" })}
+          />
+          Press Space to talk
+        </label>
+        <label className={styles.radio}>
+          <input
+            type="radio"
+            name="talkMode"
+            value="hold"
+            checked={settings.talkMode === "hold"}
+            onChange={() => useSpeechStore.getState().setSettings({ talkMode: "hold" })}
+          />
+          Hold Space to talk
+        </label>
+      </fieldset>
       <div className={styles.field}>
         <label htmlFor={voiceId}>Voice</label>
         <select

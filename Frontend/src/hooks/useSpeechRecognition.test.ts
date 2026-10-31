@@ -1,5 +1,5 @@
 import { renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { MIC_ERROR_MESSAGES } from "@/lib/phrases";
@@ -26,15 +26,16 @@ class MockRecognition {
 }
 
 describe("useSpeechRecognition", () => {
-  const cancelSpeech = vi.fn();
+  const bargeIn = vi.fn();
   const speakAssertive = vi.fn();
   const sendVoiceCommand = vi.fn();
 
   beforeEach(() => {
     resetStores();
-    cancelSpeech.mockReset();
+    bargeIn.mockReset();
     speakAssertive.mockReset();
     sendVoiceCommand.mockReset();
+    vi.useFakeTimers();
     MockRecognition.last = null;
     Object.defineProperty(window, "SpeechRecognition", {
       configurable: true,
@@ -65,6 +66,10 @@ describe("useSpeechRecognition", () => {
     });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   function renderRecognition() {
     return renderHook(() =>
       useSpeechRecognition({
@@ -73,18 +78,21 @@ describe("useSpeechRecognition", () => {
           repeatLast: vi.fn(),
           openHelp: vi.fn(),
         },
-        cancelSpeech,
+        bargeIn,
         speakAssertive,
       }),
     );
   }
 
-  it("cancels speech before starting the microphone", () => {
+  it("closes the gate and barges in before starting the microphone", async () => {
     const { result } = renderRecognition();
-    result.current.startListening();
-    expect(cancelSpeech).toHaveBeenCalled();
-    expect(MockRecognition.last?.start).toHaveBeenCalled();
+    const pending = result.current.startListening();
     expect(useVoiceStore.getState().listening).toBe(true);
+    expect(bargeIn).toHaveBeenCalled();
+    expect(MockRecognition.last?.start).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(150);
+    await pending;
+    expect(MockRecognition.last?.start).toHaveBeenCalled();
     expect(useSpeechStore.getState().politeLive).toBe("Listening");
   });
 
@@ -98,6 +106,36 @@ describe("useSpeechRecognition", () => {
     }
     recognition?.onerror?.({ error: "aborted", message: "" } as SpeechRecognitionErrorEvent);
     expect(speakAssertive).not.toHaveBeenCalledWith(expect.stringMatching(/aborted/i));
+  });
+
+  it("uses continuous recognition in hold mode and joins finals on end", async () => {
+    useSpeechStore.getState().setSettings({ talkMode: "hold" });
+    const { result } = renderRecognition();
+    const pending = result.current.startListening();
+    await vi.advanceTimersByTimeAsync(150);
+    await pending;
+    expect(MockRecognition.last?.continuous).toBe(true);
+    MockRecognition.last?.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "Search Wikipedia", confidence: 1 } }],
+    } as unknown as SpeechRecognitionEvent);
+    MockRecognition.last?.onresult?.({
+      resultIndex: 0,
+      results: [{ isFinal: true, 0: { transcript: "for cats", confidence: 1 } }],
+    } as unknown as SpeechRecognitionEvent);
+    expect(sendVoiceCommand).not.toHaveBeenCalled();
+    MockRecognition.last?.onend?.();
+    expect(sendVoiceCommand).toHaveBeenCalledWith("Search Wikipedia for cats");
+  });
+
+  it("stopListening calls stop not abort", async () => {
+    const { result } = renderRecognition();
+    const pending = result.current.startListening();
+    await vi.advanceTimersByTimeAsync(150);
+    await pending;
+    result.current.stopListening();
+    expect(MockRecognition.last?.stop).toHaveBeenCalled();
+    expect(MockRecognition.last?.abort).not.toHaveBeenCalled();
   });
 
   it("sends a final transcript as a voice command", () => {

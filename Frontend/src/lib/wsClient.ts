@@ -21,8 +21,8 @@ export interface WsClientDeps {
   webSocketCtor?: new (url: string) => WebSocket;
   randomUUID?: () => string;
   now?: () => number;
-  setTimeoutFn?: typeof setTimeout;
-  clearTimeoutFn?: typeof clearTimeout;
+  setTimeoutFn?: (handler: () => void, timeout: number) => ReturnType<typeof setTimeout>;
+  clearTimeoutFn?: (id: ReturnType<typeof setTimeout>) => void;
   wsUrl?: string;
 }
 
@@ -38,8 +38,8 @@ export class WsClient {
   private readonly WebSocketCtor: new (url: string) => WebSocket;
   private readonly randomUUID: () => string;
   private readonly now: () => number;
-  private readonly setTimeoutFn: typeof setTimeout;
-  private readonly clearTimeoutFn: typeof clearTimeout;
+  private readonly setTimeoutFn: (handler: () => void, timeout: number) => ReturnType<typeof setTimeout>;
+  private readonly clearTimeoutFn: (id: ReturnType<typeof setTimeout>) => void;
   private readonly wsUrl: string;
 
   constructor(handlers: WsClientHandlers = {}, deps: WsClientDeps = {}) {

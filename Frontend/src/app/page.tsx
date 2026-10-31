@@ -12,17 +12,18 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 import { ensureCsrfCookie, fetchMe } from "@/lib/api";
 import { unlockAudio } from "@/lib/earcons";
-import { sendVoiceCommand, type TranscriptHandlers } from "@/lib/handleTranscript";
+import { sendStopTask, sendVoiceCommand, type TranscriptHandlers } from "@/lib/handleTranscript";
 import { HELP_SPEAK, VOICE_UNSUPPORTED_SPEAK, WELCOME_SPEAK } from "@/lib/phrases";
 import { useAuthStore } from "@/stores/authStore";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useTaskStore } from "@/stores/taskStore";
 import { useVoiceStore } from "@/stores/voiceStore";
 
 export default function HomePage() {
   const [started, setStarted] = useState(false);
   const user = useAuthStore((state) => state.user);
   const authStatus = useAuthStore((state) => state.status);
-  const { speak, cancel, repeatLast, unlock } = useSpeechSynthesis();
+  const { speak, cancel, bargeIn, repeatLast, unlock } = useSpeechSynthesis();
   const startButtonRef = useRef<HTMLButtonElement>(null);
 
   const client = useRealtime({
@@ -53,13 +54,33 @@ export default function HomePage() {
     [],
   );
 
-  const { toggleListening } = useSpeechRecognition({
+  const { toggleListening, startListening, stopListening, closeMic } = useSpeechRecognition({
     handlers: transcriptHandlers,
-    cancelSpeech: cancel,
-    speakAssertive: (text) => speak(text, { priority: "assertive" }),
+    bargeIn,
+    speakAssertive: (text) => speak(text, { priority: "assertive", event: "local" }),
   });
 
-  const actions = useConsoleActions(client, speak, cancel, toggleListening, repeatLast);
+  const interrupt = useCallback(() => {
+    closeMic();
+    cancel();
+    const status = useTaskStore.getState().task?.status;
+    if (status === "running" || status === "pending" || status === "waiting_confirmation") {
+      sendStopTask(useConnectionStore.getState().client);
+    }
+  }, [cancel, closeMic]);
+
+  const actions = useConsoleActions({
+    client,
+    speak,
+    cancelSpeech: cancel,
+    closeMic,
+    startListening: () => {
+      void startListening();
+    },
+    stopListening,
+    toggleListening,
+    repeatLast,
+  });
 
   useKeyboardShortcuts(started && Boolean(user), actions.handleShortcut);
 
@@ -136,7 +157,7 @@ export default function HomePage() {
           client={client}
           onToggleListen={toggleListening}
           onRepeat={repeatLast}
-          onCancelSpeech={cancel}
+          onInterrupt={interrupt}
           onSpeakHelp={() => speak(HELP_SPEAK, { priority: "assertive" })}
         />
       ) : null}

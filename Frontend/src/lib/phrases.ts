@@ -3,7 +3,21 @@
 export const SPEECH_LANG = "en-US"; // TBD-07
 
 export const HELP_SPEAK =
-  "Press Space to speak. Press Escape to stop. Press R to repeat. Press H for help. Press S for settings. Press Y or N to answer a confirmation. You can say: Search Wikipedia for artificial intelligence.";
+  "Press Space to speak, or hold Space in walkie-talkie mode. Press T to switch talk modes, or change them in Settings. Press V to switch brief or detailed narration. Press Escape to stop. Press R to repeat. Press H for help. Press S for settings. Press Y or N to answer a confirmation. Headphones are recommended so the microphone does not hear the app. You can say: Search Wikipedia for artificial intelligence.";
+
+export const WORKING_ON_IT = "Working on it.";
+
+export const STILL_WORKING = "Still working.";
+
+export const BRIEF_MODE_SPEAK = "Brief narration.";
+
+export const DETAILED_MODE_SPEAK = "Detailed narration.";
+
+export const PRESS_MODE_SPEAK = "Press Space to talk.";
+
+export const HOLD_MODE_SPEAK = "Hold Space to talk.";
+
+export const DISCONNECTED_FINISHED_PREFIX = "While we were disconnected, your task finished. ";
 
 export const WELCOME_SPEAK =
   "Ready. Press Space and say what you want to do. Press H for help.";

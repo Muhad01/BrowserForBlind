@@ -34,6 +34,16 @@ describe("SpeechQueue", () => {
     expect(queue.current?.text).toBe("Starting");
   });
 
+  it("parks an interrupted assertive item into held and can clear held", () => {
+    const queue = new SpeechQueue();
+    queue.enqueue({ text: "Done.", event: "task_completed", priority: "assertive" });
+    queue.parkUnplayed();
+    expect(queue.takeHeld().map((item) => item.text)).toEqual(["Done."]);
+    queue.hold({ text: "Later", event: "local", priority: "assertive" });
+    queue.clear({ held: true });
+    expect(queue.takeHeld()).toEqual([]);
+  });
+
   it("never drops task_started", () => {
     const queue = new SpeechQueue();
     queue.enqueue({ text: "Starting", event: "task_started", priority: "polite" });

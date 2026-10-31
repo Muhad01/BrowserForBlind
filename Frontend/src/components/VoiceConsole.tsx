@@ -10,7 +10,14 @@ import styles from "@/components/console.module.css";
 import { logout } from "@/lib/api";
 import { sendConfirmation, sendStopTask, sendVoiceCommand } from "@/lib/handleTranscript";
 import { classifyTranscript } from "@/lib/phrases";
-import { HELP_SPEAK, VOICE_UNSUPPORTED_SPEAK } from "@/lib/phrases";
+import {
+  BRIEF_MODE_SPEAK,
+  DETAILED_MODE_SPEAK,
+  HELP_SPEAK,
+  HOLD_MODE_SPEAK,
+  PRESS_MODE_SPEAK,
+  VOICE_UNSUPPORTED_SPEAK,
+} from "@/lib/phrases";
 import type { ShortcutAction } from "@/lib/shortcuts";
 import type { WsClient } from "@/lib/wsClient";
 import { useAuthStore } from "@/stores/authStore";
@@ -23,7 +30,7 @@ interface VoiceConsoleProps {
   client: WsClient | null;
   onToggleListen: () => void;
   onRepeat: () => void;
-  onCancelSpeech: () => void;
+  onInterrupt: () => void;
   onSpeakHelp: () => void;
 }
 
@@ -68,7 +75,7 @@ export function VoiceConsole({
   client,
   onToggleListen,
   onRepeat,
-  onCancelSpeech,
+  onInterrupt,
   onSpeakHelp,
 }: VoiceConsoleProps) {
   const user = useAuthStore((state) => state.user);
@@ -124,9 +131,8 @@ export function VoiceConsole({
   );
 
   const stopTask = useCallback(() => {
-    sendStopTask(client);
-    onCancelSpeech();
-  }, [client, onCancelSpeech]);
+    onInterrupt();
+  }, [onInterrupt]);
 
   async function onSignOut() {
     try {
@@ -219,13 +225,31 @@ export function VoiceConsole({
   );
 }
 
-export function useConsoleActions(
+export function interruptSession(
   client: WsClient | null,
-  speak: (text: string, options?: { priority?: "polite" | "assertive"; event?: string }) => void,
+  closeMic: () => void,
   cancelSpeech: () => void,
-  toggleListening: () => void,
-  repeatLast: () => void,
-) {
+): void {
+  closeMic();
+  cancelSpeech();
+  const status = useTaskStore.getState().task?.status;
+  if (status === "running" || status === "pending" || status === "waiting_confirmation") {
+    sendStopTask(client);
+  }
+}
+
+export function useConsoleActions(options: {
+  client: WsClient | null;
+  speak: (text: string, options?: { priority?: "polite" | "assertive"; event?: string }) => void;
+  cancelSpeech: () => void;
+  closeMic: () => void;
+  startListening: () => void;
+  stopListening: () => void;
+  toggleListening: () => void;
+  repeatLast: () => void;
+}) {
+  const { client, speak, cancelSpeech, closeMic, startListening, stopListening, toggleListening, repeatLast } =
+    options;
   return useMemo(
     () => ({
       handleShortcut(action: ShortcutAction) {
@@ -233,9 +257,16 @@ export function useConsoleActions(
           toggleListening();
           return;
         }
+        if (action === "listen-start") {
+          void startListening();
+          return;
+        }
+        if (action === "listen-stop") {
+          stopListening();
+          return;
+        }
         if (action === "stop") {
-          sendStopTask(client);
-          cancelSpeech();
+          interruptSession(client, closeMic, cancelSpeech);
           return;
         }
         if (action === "repeat") {
@@ -244,11 +275,31 @@ export function useConsoleActions(
         }
         if (action === "help") {
           useSpeechStore.getState().setHelpOpen(true);
-          speak(HELP_SPEAK, { priority: "assertive" });
+          speak(HELP_SPEAK, { priority: "assertive", event: "local" });
           return;
         }
         if (action === "settings") {
           useSpeechStore.getState().setSettingsOpen(true);
+          return;
+        }
+        if (action === "toggle-verbosity") {
+          const current = useSpeechStore.getState().settings.verbosity;
+          const next = current === "brief" ? "detailed" : "brief";
+          useSpeechStore.getState().setSettings({ verbosity: next });
+          speak(next === "brief" ? BRIEF_MODE_SPEAK : DETAILED_MODE_SPEAK, {
+            priority: "assertive",
+            event: "local",
+          });
+          return;
+        }
+        if (action === "toggle-talk-mode") {
+          const current = useSpeechStore.getState().settings.talkMode;
+          const next = current === "press" ? "hold" : "press";
+          useSpeechStore.getState().setSettings({ talkMode: next });
+          speak(next === "hold" ? HOLD_MODE_SPEAK : PRESS_MODE_SPEAK, {
+            priority: "assertive",
+            event: "local",
+          });
           return;
         }
         const pending = useTaskStore.getState().pendingConfirmation;
@@ -265,6 +316,6 @@ export function useConsoleActions(
         }
       },
     }),
-    [cancelSpeech, client, repeatLast, speak, toggleListening],
+    [cancelSpeech, client, closeMic, repeatLast, speak, startListening, stopListening, toggleListening],
   );
 }

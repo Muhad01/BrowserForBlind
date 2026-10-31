@@ -80,7 +80,65 @@ describe("useRealtime", () => {
     MockSocket.instances[1].open();
     await waitFor(() => expect(useTaskStore.getState().task?.id).toBe("server-task"));
     expect(fetchCurrentTask).toHaveBeenCalled();
-    expect(speak).toHaveBeenCalledWith("Reconnected.", { priority: "assertive" });
+    expect(speak).toHaveBeenCalledWith("Reconnected.", { priority: "assertive", event: "local" });
+  });
+
+  it("speaks a finished-while-disconnected result exactly once", async () => {
+    useTaskStore.setState({
+      task: {
+        id: "t-done",
+        goal: "search",
+        mode: "task",
+        status: "running",
+        result_text: null,
+        error_code: null,
+        error_message: null,
+        final_url: null,
+        step_count: 2,
+        created_at: null,
+        finished_at: null,
+        pending_confirmation: null,
+      },
+    });
+    vi.mocked(fetchCurrentTask).mockResolvedValue({
+      task: {
+        id: "t-done",
+        goal: "search",
+        mode: "task",
+        status: "completed",
+        result_text: "Found the article.",
+        error_code: null,
+        error_message: null,
+        final_url: "https://en.wikipedia.org",
+        step_count: 4,
+        created_at: null,
+        finished_at: null,
+        pending_confirmation: null,
+      },
+    });
+
+    renderHook(() => useRealtime({ enabled: true, speak }));
+    await waitFor(() => expect(MockSocket.instances.length).toBe(1));
+    MockSocket.instances[0].open();
+    MockSocket.instances[0].close(1006);
+    await waitFor(() => expect(MockSocket.instances.length).toBe(2), { timeout: 2500 });
+    MockSocket.instances[1].open();
+    await waitFor(() =>
+      expect(speak).toHaveBeenCalledWith(
+        "While we were disconnected, your task finished. Found the article.",
+        { priority: "assertive", event: "local" },
+      ),
+    );
+
+    speak.mockClear();
+    MockSocket.instances[1].close(1006);
+    await waitFor(() => expect(MockSocket.instances.length).toBe(3), { timeout: 2500 });
+    MockSocket.instances[2].open();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(speak).not.toHaveBeenCalledWith(
+      expect.stringContaining("While we were disconnected"),
+      expect.anything(),
+    );
   });
 
   it("clears auth on close code 4401 and does not reconnect", async () => {

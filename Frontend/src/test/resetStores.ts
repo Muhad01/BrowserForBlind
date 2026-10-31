@@ -1,3 +1,5 @@
+import { resetDisconnectNarration } from "@/lib/disconnectNarration";
+import { resetNarrationPolicy } from "@/lib/narrationPolicy";
 import { useAuthStore } from "@/stores/authStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSpeechStore } from "@/stores/speechStore";
@@ -10,6 +12,8 @@ export function resetStores() {
   } catch {
     // jsdom may not expose storage in every test.
   }
+  resetNarrationPolicy();
+  resetDisconnectNarration();
   useAuthStore.setState({ user: null, status: "unknown" });
   useConnectionStore.setState({ status: "closed", client: null });
   useTaskStore.setState({
@@ -21,14 +25,18 @@ export function resetStores() {
   useVoiceStore.setState({
     supported: true,
     listening: false,
+    processing: false,
+    pendingRequestId: null,
     lastTranscript: "",
     lastInterim: "",
     lastError: null,
   });
   useSpeechStore.setState({
     lastSpoken: "",
+    lastAssertive: "",
+    lastSpokenAt: 0,
     speaking: false,
-    settings: { rate: 1.1, voiceURI: "", outputMode: "voice" },
+    settings: { rate: 1.1, voiceURI: "", outputMode: "voice", verbosity: "brief", talkMode: "press" },
     politeLive: "",
     assertiveLive: "",
     voices: [],
