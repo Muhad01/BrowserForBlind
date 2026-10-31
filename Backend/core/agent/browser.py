@@ -38,6 +38,10 @@ class BrowserGateway(Protocol):
         """Safely terminate the browser process and release the profile lock."""
         ...
 
+    async def get_current_page_url(self) -> str:
+        """Return the URL of the currently focused page."""
+        ...
+
 
 class BrowserUseGateway:
     """Production browser gateway wrapping browser-use 0.13.14 primitives.
@@ -52,6 +56,8 @@ class BrowserUseGateway:
 
     async def start(self, profile_dir: Path) -> None:
         """Start a browser session using browser-use BrowserSession and BrowserProfile."""
+        if self.session is not None:
+            return
         from browser_use.browser.profile import BrowserProfile
         from browser_use.browser.session import BrowserSession
 
@@ -279,6 +285,24 @@ class BrowserUseGateway:
             finally:
                 await asyncio.sleep(0.3)
 
+    async def get_current_page_url(self) -> str:
+        if not self.session:
+            raise RuntimeError("Browser session has not been started.")
+        return await self.session.get_current_page_url()
+
+
+class _FakeCdpSession:
+    """Minimal session stand-in so BrowserHost health checks work in tests."""
+
+    def __init__(self, url: str = "https://example.com"):
+        self.is_cdp_connected = True
+        self._url = url
+
+    async def get_current_page_url(self) -> str:
+        if not self.is_cdp_connected:
+            raise RuntimeError("CDP disconnected")
+        return self._url
+
 
 class FakeBrowserGateway:
     """In-memory mock browser gateway for unit testing without Chromium (NFR-MAINT-03)."""
@@ -298,10 +322,13 @@ class FakeBrowserGateway:
         self.action_counter = 0
         self.is_closed = False
         self.started_profile: Path | None = None
+        self.session: _FakeCdpSession | None = None
 
     async def start(self, profile_dir: Path) -> None:
         self.started_profile = profile_dir
         self.is_closed = False
+        if self.session is None:
+            self.session = _FakeCdpSession()
 
     async def observe(self) -> PageObservation:
         if self.pages:
@@ -327,7 +354,15 @@ class FakeBrowserGateway:
             )
 
         self.executed_actions.append(action)
+        if action.action == ActionType.NAVIGATE and self.session is not None:
+            self.session._url = action.target
         return ExecResult(ok=True, duration_ms=10)
 
     async def close(self) -> None:
         self.is_closed = True
+        self.session = None
+
+    async def get_current_page_url(self) -> str:
+        if self.session is None:
+            raise RuntimeError("Browser session has not been started.")
+        return await self.session.get_current_page_url()

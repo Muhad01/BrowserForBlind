@@ -24,7 +24,7 @@ from core.agent.schema import NormalizedAction
 from core.agent.validator import ActionValidator, ValidationFailure
 from core.enums import ActionStatus, ActionType, SafetyDecision, TaskStatus
 from core.errors import USER_MESSAGES, ErrorCode
-from core.models import AgentAction, AgentTask, PageState
+from core.models import AgentAction, AgentTask, BrowserSession, PageState
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +40,7 @@ class TaskRunner:
         policy: SafetyPolicy,
         perception: PerceptionPort,
         publisher: EventPublisher,
+        reopened_page: bool = False,
     ):
         self.task_id = task_id
         self.llm = llm
@@ -47,10 +48,15 @@ class TaskRunner:
         self.policy = policy
         self.perception = perception
         self.publisher = publisher
+        self.reopened_page = reopened_page
 
     async def run(self) -> None:
         """Execute the main agent loop (FR-10)."""
+        from django.db import close_old_connections
+
+        close_old_connections()
         task = await AgentTask.objects.select_related("user", "session", "session__profile").aget(pk=self.task_id)
+        session = task.session
 
         # Server-side resolved profile path (FR-53)
         profile_dir = task.session.profile.path if task.session.profile else settings.BROWSER_PROFILE_ROOT / str(task.user_id) / "default"
@@ -72,13 +78,27 @@ class TaskRunner:
         last_title: str | None = None
         last_url: str | None = None
 
+        close_browser = False
         try:
             try:
-                await self.browser.start(profile_dir)
+                if getattr(self.browser, "session", None) is None:
+                    await self.browser.start(profile_dir)
             except Exception as start_err:
                 logger.error("Browser launch failed", task_id=str(task.id), error=str(start_err))
                 await self._fail_task(task, ErrorCode.BROWSER_START_FAILED, detail=str(start_err))
                 return
+
+            if self.reopened_page:
+                await self.publisher.publish(
+                    task,
+                    "agent_status",
+                    {
+                        "speak": "I reopened your last page.",
+                        "step": step_count,
+                        "url": session.last_url or "",
+                        "title": "",
+                    },
+                )
 
             while True:
                 # FR-41/42: Check for cooperative cancellation
@@ -130,6 +150,11 @@ class TaskRunner:
                     )
                 last_title = obs.title
                 last_url = obs.url
+                if obs.url and obs.url != "about:blank":
+                    await BrowserSession.objects.filter(pk=task.session_id).aupdate(
+                        last_url=obs.url[:2048],
+                        updated_at=timezone.now(),
+                    )
                 state_hash = hashlib.sha256(f"{obs.url}{obs.title}".encode()).hexdigest()
                 await PageState.objects.acreate(
                     task=task,
@@ -446,12 +471,15 @@ class TaskRunner:
         except Exception as err:
             err_str = str(err).lower()
             if "crash" in err_str or "disconnect" in err_str or "target closed" in err_str:
+                close_browser = True
                 await self._fail_task(task, ErrorCode.BROWSER_CRASHED, detail=str(err))
             else:
                 logger.exception("Unexpected error in TaskRunner", task_id=str(task.id), error=str(err))
                 await self._fail_task(task, ErrorCode.INTERNAL_ERROR, detail=str(err))
         finally:
-            await self.browser.close()
+            if close_browser:
+                await self.browser.close()
+            close_old_connections()
 
     async def _fail_task(self, task: AgentTask, error_code: ErrorCode, detail: str = "") -> None:
         """Fail task with standardized code and user-safe spoken message (NFR-SEC-06). Never raises."""

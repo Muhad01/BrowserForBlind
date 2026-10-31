@@ -35,6 +35,9 @@ dist/
 # User session browser profiles
 browser_profiles/
 
+# Perception screenshots (MEDIA_ROOT/screens)
+media/
+
 # Secrets and sensitive files
 secrets.env
 .env

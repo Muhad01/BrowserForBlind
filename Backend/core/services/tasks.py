@@ -52,8 +52,11 @@ def create_task(
 
         if dispatch:
             def dispatch_celery_task() -> None:
+                from core.agent.browser_host import queue_for_session
                 from core.tasks import run_agent_task
-                async_res = run_agent_task.delay(str(task.id))
+
+                queue = queue_for_session(session)
+                async_res = run_agent_task.apply_async(args=[str(task.id)], queue=queue)
                 task.celery_task_id = async_res.id
                 task.save(update_fields=["celery_task_id", "updated_at"])
 

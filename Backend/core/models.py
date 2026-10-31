@@ -121,6 +121,8 @@ class BrowserSession(BaseModel):
     )
     closed_at = models.DateTimeField(null=True, blank=True)
     last_error_code = models.CharField(max_length=64, blank=True)
+    last_url = models.CharField(max_length=2048, blank=True)
+    worker_queue = models.CharField(max_length=128, blank=True)
 
     class Meta:
         verbose_name = "Browser Session"

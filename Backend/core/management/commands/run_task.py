@@ -1,18 +1,17 @@
 """CLI command to trigger and test agent tasks end-to-end (NFR-MAINT-03)."""
-import asyncio
 from typing import Any
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from core.agent.browser import BrowserUseGateway
+from core.agent.browser_host import get_browser_host
 from core.agent.events import EventPublisher
 from core.agent.llm import GeminiClient
 from core.agent.perception import PlaceholderPerceptionAgent
 from core.agent.runner import TaskRunner
 from core.agent.safety import PlaceholderSafetyPolicy
-from core.enums import TaskStatus
+from core.enums import TaskMode, TaskStatus
 from core.models import AgentTask
 from core.services.tasks import create_task
 
@@ -28,6 +27,9 @@ class ConsolePublisher(EventPublisher):
 
     async def publish(self, task: AgentTask, event: str, payload: dict[str, Any]) -> None:
         speak_text = payload.get("speak") or payload.get("text") or payload.get("message") or ""
+        if payload.get("silent"):
+            self.stdout.write(f"   [{event}] (silent)")
+            return
         if event == "browser_action":
             self.stdout.write(self.style.SUCCESS(f">> [SPEAK] {speak_text}"))
         elif event == "task_started":
@@ -74,32 +76,51 @@ class Command(BaseCommand):
         self.stdout.write(f"Created AgentTask id: {task.id} (Status: {task.status})")
 
         if is_sync:
-            self.stdout.write(self.style.WARNING("Running task synchronously (inline)..."))
+            self.stdout.write(self.style.WARNING("Running task synchronously (inline) via BrowserHost..."))
             task.transition_to(TaskStatus.RUNNING)
 
             llm = GeminiClient()
-            browser = BrowserUseGateway()
             policy = PlaceholderSafetyPolicy()
             perception = PlaceholderPerceptionAgent()
             publisher = ConsolePublisher(self.stdout, self.style)
+            host = get_browser_host()
+            timeout = float(getattr(settings, "BROWSER_TASK_TIMEOUT_SECONDS", 1800))
 
-            runner = TaskRunner(
-                task_id=task.id,
-                llm=llm,
-                browser=browser,
-                policy=policy,
-                perception=perception,
-                publisher=publisher,
-            )
+            session = task.session
+            profile_dir = host._profile_dir(session)
+            last_url = session.last_url or ""
+            session_id = str(session.id)
+
+            async def _run() -> None:
+                acquired = await host.acquire_async(session_id, profile_dir, last_url)
+                if task.mode == TaskMode.PERCEPTION:
+                    from core.agent.perception_runner import PerceptionRunner
+
+                    runner = PerceptionRunner(
+                        task_id=task.id,
+                        browser=acquired.gateway,
+                        publisher=publisher,
+                        reopened_page=acquired.restored,
+                    )
+                    await runner.run()
+                else:
+                    runner = TaskRunner(
+                        task_id=task.id,
+                        llm=llm,
+                        browser=acquired.gateway,
+                        policy=policy,
+                        perception=perception,
+                        publisher=publisher,
+                        reopened_page=acquired.restored,
+                    )
+                    await runner.run()
 
             try:
-                import sys
-                if sys.platform == "win32":
-                    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-                asyncio.run(runner.run())
+                host.submit(_run(), timeout=timeout)
             except KeyboardInterrupt:
                 self.stdout.write(self.style.ERROR("Execution interrupted by user."))
             finally:
+                host.release(str(task.session_id))
                 task.refresh_from_db()
                 self.stdout.write(f"Final task status: {task.status}")
                 if task.result_text:
@@ -107,4 +128,3 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.SUCCESS(f"Dispatched task to Celery worker (Task ID: {task.id})"))
             self.stdout.write("Monitor celery worker logs to view task execution.")
-

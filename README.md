@@ -59,7 +59,7 @@ Four terminals on Windows. Use **Google Chrome** (Web Speech recognition is Chro
    cd Backend
    uv run python manage.py runserver
    ```
-3. **Background Browser Celery Worker**:
+3. **Background Browser Celery Worker** (one `--pool=solo` worker owns the live browsers; Chromium stays open between commands):
    ```bash
    cd Backend
    uv run celery -A cight worker --pool=solo --loglevel=info
@@ -85,12 +85,20 @@ Then open `http://localhost:3000` in Google Chrome. Copy `Frontend/.env.local.ex
 
 ## Running the Celery Worker directly
 
-Celery's default prefork pool does not support Windows process management. Run the worker with the `solo` pool and concurrency 1:
+Celery's default prefork pool does not support Windows process management. Run **one** worker with the `solo` pool. That process owns the live browsers (do not run multiple workers against the same profile):
 
 ```bash
 cd Backend
 uv run celery -A cight worker --pool=solo --loglevel=info
 ```
+
+Optional named queue (same worker, plus the default queue). Set `BROWSER_WORKER_QUEUE=browser.<hostname>` so every task for a session is recorded on `BrowserSession.worker_queue` and routed to that worker (NFR-SCAL-01). For this FYP, one worker on the default `celery` queue is the supported setup.
+
+```bash
+uv run celery -A cight worker --pool=solo --loglevel=info -Q celery,browser.%COMPUTERNAME%
+```
+
+Idle browsers close after `BROWSER_IDLE_SECONDS` (default 900). Closing a session publishes `close_browser` to the same worker.
 
 ## Running Dev Tasks (CLI)
 

@@ -16,5 +16,8 @@ __pycache__/
 .venv*/
 venv/
 
+# Perception screenshots
+Backend/media/
+
 # Node
 node_modules/

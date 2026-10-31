@@ -101,5 +101,24 @@ def close_session(
                 t.cancel_requested = True
                 t.save(update_fields=["cancel_requested", "updated_at"])
 
+        _dispatch_browser_close(session)
+
     return session
+
+
+def _dispatch_browser_close(session: BrowserSession) -> None:
+    """Ask the worker that owns Chromium to kill this session's browser (FR-02)."""
+    try:
+        from core.agent.browser_host import queue_for_session
+        from core.tasks import close_browser
+
+        queue = session.worker_queue or queue_for_session(session)
+        close_browser.apply_async(args=[str(session.id)], queue=queue)
+    except Exception:
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "Failed to dispatch close_browser",
+            session_id=str(session.id),
+        )
 
