@@ -1,33 +1,28 @@
 """LLM client protocols and implementations for Task Agent (NFR-OPS-01, NFR-MAINT-03, NFR-REL-01)."""
-import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-import structlog
 from django.conf import settings
 from google import genai
 from google.genai import types
-from google.genai.errors import APIError
-from pydantic import ValidationError
 
+from core.agent.gemini_base import LLMBadOutput, LLMUnavailable, generate_with_fallback
 from core.agent.model_pool import (
     ModelPool,
     get_task_model_pool,
-    is_daily_quota_error,
 )
 from core.agent.prompts import TASK_AGENT_SYSTEM_PROMPT
 from core.agent.schema import PageObservation, ProposedAction
 
-logger = structlog.get_logger(__name__)
-
-
-class LLMUnavailable(Exception):
-    """Raised when the LLM service cannot be reached or times out (NFR-REL-01)."""
-
-
-class LLMBadOutput(Exception):
-    """Raised when the LLM returns invalid or unparseable structured output (NFR-REL-01)."""
+__all__ = [
+    "HistoryItem",
+    "Proposal",
+    "LLMClient",
+    "LLMUnavailable",
+    "LLMBadOutput",
+    "GeminiClient",
+    "FakeLLMClient",
+]
 
 
 @dataclass
@@ -109,95 +104,16 @@ class GeminiClient:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
-        available_models = self.pool.available()
-        if not available_models:
-            raise LLMUnavailable("all models unavailable: no models available in pool")
-
-        reasons: list[str] = []
-
-        for idx, model in enumerate(available_models):
-            if should_abort and should_abort():
-                raise LLMUnavailable("Task aborted by user cancellation.")
-            model_failed = False
-            failure_reason = ""
-
-            for parse_attempt in range(2):
-                try:
-                    coro = self.client.aio.models.generate_content(
-                        model=model,
-                        contents=prompt_text,
-                        config=config,
-                    )
-                    response = await asyncio.wait_for(coro, timeout=self.timeout)
-                    raw_text = getattr(response, "text", "") or ""
-
-                    if not raw_text:
-                        if parse_attempt == 0:
-                            continue
-                        raise LLMBadOutput(f"Gemini model {model} returned empty response twice.")
-
-                    action = ProposedAction.model_validate_json(raw_text)
-                    self.pool.mark_ok(model)
-                    return Proposal(action=action, model=model)
-
-                except (ValidationError, json.JSONDecodeError) as err:
-                    if parse_attempt == 0:
-                        continue
-                    # LLMBadOutput does NOT fall through to next model (it is a quality problem)
-                    raise LLMBadOutput(f"Failed to parse LLM structured output from {model}: {err}") from err
-
-                except TimeoutError:
-                    model_failed = True
-                    self.pool.mark_server_error(model, seconds=30.0)
-                    failure_reason = "timeout"
-                    break
-
-                except APIError as err:
-                    model_failed = True
-                    code = getattr(err, "code", None)
-                    try:
-                        code_int = int(code) if code is not None else None
-                    except (ValueError, TypeError):
-                        code_int = None
-
-                    err_str = str(err)
-                    if code_int == 429 or "429" in err_str:
-                        is_daily = is_daily_quota_error(err_str)
-                        self.pool.mark_rate_limited(model, daily=is_daily)
-                        failure_reason = f"rate limited (429, daily={is_daily})"
-                    elif code_int in {500, 502, 503, 504} or any(
-                        s in err_str.lower() for s in ["503", "500", "unavailable", "server error"]
-                    ):
-                        self.pool.mark_server_error(model, seconds=30.0)
-                        failure_reason = f"server error ({code_int or '5xx'})"
-                    elif code_int is not None and 400 <= code_int < 500:
-                        logger.error("gemini_client_error", model=model, code=code_int, error=err_str)
-                        self.pool.mark_permanent_failure(model)
-                        failure_reason = f"client error ({code_int})"
-                    else:
-                        self.pool.mark_server_error(model, seconds=30.0)
-                        failure_reason = f"api error: {err_str}"
-                    break
-
-                except Exception as err:
-                    # Non-API unexpected network or connection error
-                    model_failed = True
-                    self.pool.mark_server_error(model, seconds=30.0)
-                    failure_reason = f"unexpected error: {err}"
-                    break
-
-            if model_failed:
-                reasons.append(f"{model}:{failure_reason}")
-                if idx + 1 < len(available_models):
-                    next_model = available_models[idx + 1]
-                    logger.info(
-                        "llm_fallback",
-                        from_model=model,
-                        to_model=next_model,
-                        reason=failure_reason,
-                    )
-
-        raise LLMUnavailable(f"all models unavailable: {', '.join(reasons)}")
+        parsed, model = await generate_with_fallback(
+            client=self.client,
+            pool=self.pool,
+            contents=prompt_text,
+            config=config,
+            timeout=self.timeout,
+            parse=ProposedAction.model_validate_json,
+            should_abort=should_abort,
+        )
+        return Proposal(action=parsed, model=model)
 
 
 class FakeLLMClient:
