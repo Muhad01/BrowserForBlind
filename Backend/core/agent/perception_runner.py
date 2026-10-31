@@ -59,7 +59,7 @@ class PerceptionRunner:
             pk=self.task_id
         )
         session = task.session
-        operation = self._operation_for(task)
+        operation = await self._operation_for(task)
         brief = READING_BRIEF if operation in {CommandIntent.READ, CommandIntent.READ_MORE} else LOOKING_BRIEF
         await self.publisher.publish(
             task,
@@ -135,8 +135,8 @@ class PerceptionRunner:
         finally:
             close_old_connections()
 
-    def _operation_for(self, task: AgentTask) -> CommandIntent:
-        cached = cache.get(perception_op_key(str(task.id)))
+    async def _operation_for(self, task: AgentTask) -> CommandIntent:
+        cached = await sync_to_async(cache.get)(perception_op_key(str(task.id)))
         if cached:
             try:
                 return CommandIntent(cached)
@@ -152,21 +152,21 @@ class PerceptionRunner:
         operation: CommandIntent,
     ) -> PerceptionResult:
         cursor_key = read_cursor_key(str(session.id))
-        stored = cache.get(cursor_key) or {}
+        stored = (await sync_to_async(cache.get)(cursor_key)) or {}
         if stored.get("url") != capture.url:
             stored = {"url": capture.url, "index": 0}
-            cache.set(cursor_key, stored, 86_400)
+            await sync_to_async(cache.set)(cursor_key, stored, 86_400)
 
         if operation == CommandIntent.DESCRIBE:
             return await self.perception.describe(capture)
 
         if operation == CommandIntent.ANSWER:
-            question = cache.get(perception_question_key(str(task.id))) or task.goal
+            question = (await sync_to_async(cache.get)(perception_question_key(str(task.id)))) or task.goal
             return await self.perception.answer(capture, question)
 
         if operation == CommandIntent.READ:
             result = await self.perception.read(capture, 0)
-            cache.set(cursor_key, {"url": capture.url, "index": result.cursor}, 86_400)
+            await sync_to_async(cache.set)(cursor_key, {"url": capture.url, "index": result.cursor}, 86_400)
             return result
 
         if operation == CommandIntent.READ_MORE:
@@ -174,7 +174,7 @@ class PerceptionRunner:
             if index <= 0:
                 return PerceptionResult(text=NOTHING_TO_CONTINUE, uncertain=False, has_more=False)
             result = await self.perception.read(capture, index)
-            cache.set(cursor_key, {"url": capture.url, "index": result.cursor}, 86_400)
+            await sync_to_async(cache.set)(cursor_key, {"url": capture.url, "index": result.cursor}, 86_400)
             return result
 
         return await self.perception.describe(capture)

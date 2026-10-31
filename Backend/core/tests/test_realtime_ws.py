@@ -200,7 +200,7 @@ async def test_ws_voice_command_success(ws_user):
     )
     await communicator.connect()
 
-    with patch("core.tasks.run_agent_task.delay") as mock_delay:
+    with patch("core.tasks.run_agent_task.apply_async") as mock_apply:
         await communicator.send_json_to({
             "type": "voice_command",
             "request_id": "req-1",
@@ -217,7 +217,8 @@ async def test_ws_voice_command_success(ws_user):
 
         assert task is not None
         assert task.status == TaskStatus.PENDING
-        mock_delay.assert_called_once_with(str(task.id))
+        mock_apply.assert_called_once()
+        assert mock_apply.call_args.kwargs.get("args") == [str(task.id)]
 
     await communicator.disconnect()
 

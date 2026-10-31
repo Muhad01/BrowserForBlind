@@ -135,8 +135,8 @@ async def test_capture_skips_screenshot_when_password_filled(monkeypatch):
 
     monkeypatch.setattr(BrowserUseGateway, "_collect_perception_dom", fake_dom)
 
-    import types
     import sys
+    import types
 
     fake_mod = types.ModuleType("browser_use.dom.markdown_extractor")
     fake_mod.extract_clean_markdown = fake_markdown
@@ -151,9 +151,11 @@ async def test_capture_skips_screenshot_when_password_filled(monkeypatch):
 
 
 def test_resize_screenshot_jpeg_caps_width():
-    from core.agent.browser import resize_screenshot_jpeg
-    from PIL import Image
     from io import BytesIO
+
+    from PIL import Image
+
+    from core.agent.browser import resize_screenshot_jpeg
 
     raw = _tiny_jpeg()
     out = resize_screenshot_jpeg(raw, max_width=1280, quality=70)

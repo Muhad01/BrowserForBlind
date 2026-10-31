@@ -60,9 +60,7 @@ def resize_screenshot_jpeg(data: bytes, max_width: int = SCREENSHOT_MAX_WIDTH, q
     if image.width > max_width:
         height = max(1, int(image.height * (max_width / image.width)))
         image = image.resize((max_width, height), Image.Resampling.LANCZOS)
-    if image.mode not in {"RGB", "L"}:
-        image = image.convert("RGB")
-    elif image.mode == "L":
+    if image.mode != "RGB":
         image = image.convert("RGB")
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=quality, optimize=True)
