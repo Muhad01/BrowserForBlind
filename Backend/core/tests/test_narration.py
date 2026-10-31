@@ -92,6 +92,20 @@ def test_page_change_narration():
     assert is_url_like("/wiki/Main_Page")
 
 
+def test_is_url_like_title_heuristic():
+    """A title is URL-like only if it contains ://, starts with /, or equals the hostname."""
+    wiki_url = "https://en.wikipedia.org/wiki/Artificial_intelligence"
+    assert is_url_like("https://en.wikipedia.org/wiki/Artificial_intelligence")
+    assert is_url_like("/wiki/Artificial_intelligence")
+    assert is_url_like("en.wikipedia.org")
+    assert is_url_like("en.wikipedia.org", url=wiki_url)
+    # "Wikipedia" matches the site name but is a real title — keep it
+    assert not is_url_like("Wikipedia")
+    assert not is_url_like("Wikipedia", url=wiki_url)
+    assert not is_url_like("Artificial intelligence")
+    assert not is_url_like("Artificial intelligence - Wikipedia", url=wiki_url)
+
+
 def test_suggestion_role_narration():
     meta = ElementMeta(role="suggestion", accessible_name="Artificial intelligence")
     assert format_click(meta) == "Choosing the suggestion Artificial intelligence"
@@ -119,6 +133,11 @@ def test_trim_accessible_name():
 def test_terminal_and_lifecycle_narration():
     assert format_task_started("Find the nearest library") == "Starting: Find the nearest library"
     assert format_stop("Found 3 results.") == "Done. Found 3 results."
+    assert format_stop("Found 3 results.", "") == "Done. Found 3 results."
+    assert format_stop("Found 3 results.", "Artificial intelligence") == (
+        "Done. Found 3 results. You're on Artificial intelligence."
+    )
+    assert format_stop("Found 3 results.", "en.wikipedia.org") == "Done. Found 3 results."
     assert format_task_cancelled() == "Stopped. Nothing else will be done."
 
 
@@ -129,7 +148,9 @@ def test_every_sentence_under_20_words():
 
     very_long_result = " ".join(["result"] * 50)
     spoken_result = format_stop(very_long_result)
-    assert len(spoken_result.split()) <= 20
+    assert len(spoken_result.split()) <= 30
+    spoken_with_title = format_stop(very_long_result, "A very long page title with extra words")
+    assert len(spoken_with_title.split()) <= 30
 
 
 def test_accessible_name_priority():

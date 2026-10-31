@@ -9,6 +9,23 @@ from core.models import AgentTask
 
 logger = structlog.get_logger(__name__)
 
+# SRS v1.1 realtime event names (FR-55..66)
+SRS_EVENT_NAMES = frozenset({
+    "task_started",
+    "agent_status",
+    "browser_action",
+    "perception_result",
+    "confirmation_required",
+    "task_completed",
+    "task_failed",
+})
+
+
+def ensure_srs_event(event: str) -> None:
+    """Raise ValueError for any event name not in the SRS list."""
+    if event not in SRS_EVENT_NAMES:
+        raise ValueError(f"Unknown event name '{event}'. Must be one of: {sorted(SRS_EVENT_NAMES)}")
+
 
 class EventPublisher(Protocol):
     """Protocol for broadcasting agent lifecycle and feedback events."""
@@ -22,6 +39,7 @@ class ChannelsEventPublisher:
     """Real-time event publisher broadcasting to Django Channels user groups."""
 
     async def publish(self, task: AgentTask, event: str, payload: dict[str, Any]) -> None:
+        ensure_srs_event(event)
         channel_layer = get_channel_layer()
         if not channel_layer:
             logger.warning("No channel layer configured; skipping event", event=event)
@@ -47,6 +65,7 @@ class RecordingPublisher:
     events: list[dict[str, Any]] = field(default_factory=list)
 
     async def publish(self, task: AgentTask, event: str, payload: dict[str, Any]) -> None:
+        ensure_srs_event(event)
         self.events.append({
             "task_id": str(task.id),
             "event": event,
@@ -58,4 +77,4 @@ class NullPublisher:
     """No-op event publisher."""
 
     async def publish(self, task: AgentTask, event: str, payload: dict[str, Any]) -> None:
-        pass
+        ensure_srs_event(event)

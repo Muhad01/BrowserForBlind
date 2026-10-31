@@ -16,6 +16,7 @@ from core.agent.narration import (
     format_stop,
     format_task_cancelled,
     format_task_started,
+    is_url_like,
 )
 from core.agent.perception import PerceptionPort
 from core.agent.safety import SafetyPolicy, SafetyVerdict
@@ -65,6 +66,7 @@ class TaskRunner:
         step_count = task.step_count
         consecutive_failures = task.consecutive_failures
         last_title: str | None = None
+        last_url: str | None = None
 
         try:
             try:
@@ -102,6 +104,13 @@ class TaskRunner:
                 # Capture current page state
                 obs = await self.browser.observe()
 
+                # After an executed action, if the URL changed but title is still empty,
+                # retry the title (same 4×0.5s retry) before deciding.
+                if last_url is not None and obs.url != last_url and not (obs.title or "").strip():
+                    recovered = await self.browser.refresh_title(obs.url)
+                    if recovered and not is_url_like(recovered, obs.url):
+                        obs = obs.model_copy(update={"title": recovered})
+
                 # Publish agent_status ONLY when page title changed (FR-20, Part C.3)
                 if last_title is not None and obs.title != last_title and obs.title.strip():
                     page_speak = format_page_change(obs.title, url=obs.url)
@@ -116,6 +125,7 @@ class TaskRunner:
                         },
                     )
                 last_title = obs.title
+                last_url = obs.url
                 state_hash = hashlib.sha256(f"{obs.url}{obs.title}".encode()).hexdigest()
                 await PageState.objects.acreate(
                     task=task,
@@ -293,7 +303,7 @@ class TaskRunner:
                     await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
                     # FR-12, FR-22, FR-64
                     await self.publisher.publish(task, "task_completed", {
-                        "speak": format_stop(normalized.value),
+                        "speak": format_stop(normalized.value, final_title),
                         "result": normalized.value,
                         "final_url": final_url,
                         "final_title": final_title,

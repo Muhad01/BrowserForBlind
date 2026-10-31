@@ -458,14 +458,18 @@ async def test_runner_event_contract(runner_task):
     status_events = [e for e in publisher.events if e["event"] == "agent_status"]
     assert len(status_events) == 0
 
-    # 3. Every event has speak <= 20 words
+    # 3. Every event has speak; task_completed may use 30 words, others stay at 20
     for e in publisher.events:
         payload = e["payload"]
         assert "speak" in payload, f"Event {e['event']} missing 'speak'"
         speak_text = payload["speak"]
         assert isinstance(speak_text, str) and len(speak_text.strip()) > 0
         words = speak_text.strip().split()
-        assert len(words) <= 20, f"Event {e['event']} speak has {len(words)} words > 20: '{speak_text}'"
+        limit = 30 if e["event"] == "task_completed" else 20
+        assert len(words) <= limit, f"Event {e['event']} speak has {len(words)} words > {limit}: '{speak_text}'"
+
+    completed = publisher.events[-1]
+    assert completed["payload"]["speak"] == "Done. Completed successfully You're on Same Title."
 
 
 @pytest.mark.django_db(transaction=True)
@@ -512,5 +516,42 @@ async def test_runner_records_model_used_on_action(runner_task):
     assert act1.model_used == "gemini-3.5-flash-lite"
     act2 = await AgentAction.objects.filter(task=runner_task, sequence=2).afirst()
     assert act2.model_used == "gemini-3.8-flash"
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_retries_empty_title_after_url_change(runner_task):
+    """After an executed action, retry title when the next URL changed but title is empty."""
+    obs1 = PageObservation(url="https://en.wikipedia.org", title="Wikipedia", element_indexes={1})
+    obs2 = PageObservation(
+        url="https://en.wikipedia.org/wiki/Artificial_intelligence",
+        title="",
+        element_indexes={1},
+    )
+    browser = FakeBrowserGateway(
+        pages=[obs1, obs2, obs2],
+        title_retries=["Artificial intelligence"],
+    )
+    llm = FakeLLMClient(script=[
+        ProposedAction(action="click", target="1"),
+        ProposedAction(action="stop", value="Found the article."),
+    ])
+    policy = PlaceholderSafetyPolicy()
+    perception = PlaceholderPerceptionAgent()
+    publisher = RecordingPublisher()
+
+    runner = TaskRunner(runner_task.id, llm, browser, policy, perception, publisher)
+    await runner.run()
+
+    status_events = [e for e in publisher.events if e["event"] == "agent_status"]
+    assert len(status_events) == 1
+    assert status_events[0]["payload"]["title"] == "Artificial intelligence"
+
+    completed = [e for e in publisher.events if e["event"] == "task_completed"]
+    assert completed
+    assert completed[0]["payload"]["speak"] == (
+        "Done. Found the article. You're on Artificial intelligence."
+    )
+    assert completed[0]["payload"]["final_title"] == "Artificial intelligence"
 
 

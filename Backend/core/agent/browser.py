@@ -26,6 +26,10 @@ class BrowserGateway(Protocol):
         """Capture the current page state, indexed DOM elements, and metadata."""
         ...
 
+    async def refresh_title(self, url: str = "") -> str:
+        """Retry the page title after a navigation when observe() still returned empty."""
+        ...
+
     async def execute(self, action: NormalizedAction) -> ExecResult:
         """Execute a single normalized browser action in Chromium."""
         ...
@@ -68,19 +72,11 @@ class BrowserUseGateway:
 
         state = await self.session.get_browser_state_summary(include_screenshot=False)
 
+        url = state.url or "about:blank"
         title = state.title or ""
-        if is_url_like(title):
-            for _ in range(4):
-                await asyncio.sleep(0.5)
-                try:
-                    candidate = await self.session.get_current_page_title()
-                    if candidate and not is_url_like(candidate):
-                        title = candidate
-                        break
-                except Exception:
-                    pass
-            if is_url_like(title):
-                title = ""
+        if is_url_like(title, url):
+            recovered = await self.refresh_title(url)
+            title = recovered if recovered else ""
 
         elements_text = ""
         element_indexes: set[int] = set()
@@ -155,13 +151,32 @@ class BrowserUseGateway:
                 )
 
         return PageObservation(
-            url=state.url or "about:blank",
+            url=url,
             title=title,
             elements_text=elements_text,
             element_indexes=element_indexes,
             element_meta=element_meta,
             screenshot_b64=None,
         )
+
+    async def refresh_title(self, url: str = "") -> str:
+        """Retry the page title 4×0.5s when observe() still has an empty or URL-like title."""
+        if not self.session:
+            return ""
+        title = ""
+        for _ in range(4):
+            await asyncio.sleep(0.5)
+            try:
+                candidate = await self.session.get_current_page_title()
+                if candidate and not is_url_like(candidate, url):
+                    return candidate
+                if candidate:
+                    title = candidate
+            except Exception:
+                pass
+        if title and not is_url_like(title, url):
+            return title
+        return ""
 
     async def execute(self, action: NormalizedAction) -> ExecResult:
         """Dispatch a single event into browser-use's internal event bus."""
@@ -273,10 +288,12 @@ class FakeBrowserGateway:
         pages: list[PageObservation] | None = None,
         fail_on_sequences: set[int] | None = None,
         crash_on_sequence: int | None = None,
+        title_retries: list[str] | None = None,
     ):
         self.pages: list[PageObservation] = list(pages or [])
         self.fail_on_sequences = set(fail_on_sequences or set())
         self.crash_on_sequence = crash_on_sequence
+        self.title_retries = list(title_retries or [])
         self.executed_actions: list[NormalizedAction] = []
         self.action_counter = 0
         self.is_closed = False
@@ -290,6 +307,11 @@ class FakeBrowserGateway:
         if self.pages:
             return self.pages.pop(0)
         return PageObservation(url="https://example.com", title="Example Domain")
+
+    async def refresh_title(self, url: str = "") -> str:
+        if getattr(self, "title_retries", None):
+            return self.title_retries.pop(0)
+        return ""
 
     async def execute(self, action: NormalizedAction) -> ExecResult:
         self.action_counter += 1

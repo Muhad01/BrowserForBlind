@@ -15,12 +15,17 @@ from core.enums import ActionType
 from core.errors import USER_MESSAGES, ErrorCode
 
 
+def ensure_under_n_words(text: str, limit: int) -> str:
+    """Clamp sentence length to at most `limit` words (NFR-ACC-02)."""
+    words = text.strip().split()
+    if len(words) <= limit:
+        return text.strip()
+    return " ".join(words[:limit])
+
+
 def ensure_under_20_words(text: str) -> str:
     """Clamp sentence length to at most 20 words (NFR-ACC-02)."""
-    words = text.strip().split()
-    if len(words) <= 20:
-        return text.strip()
-    return " ".join(words[:20])
+    return ensure_under_n_words(text, 20)
 
 
 def trim_accessible_name(text: str) -> str:
@@ -127,14 +132,39 @@ def compute_role(
     return tag_lower or "element"
 
 
-def is_url_like(text: str) -> bool:
-    """Check if a string looks like a URL or raw path rather than a friendly page title."""
-    t = (text or "").strip().lower()
-    if not t or t == "page":
+def is_url_like(text: str, url: str = "") -> bool:
+    """A title is URL-like only if it contains ://, starts with /, or equals the hostname.
+
+    A title like "Wikipedia" that matches the site name (no dot) is a real title.
+    A title like "en.wikipedia.org" that equals the full hostname including a dot is not.
+    """
+    t = (text or "").strip()
+    if not t:
         return True
-    if "://" in t or t.startswith("/") or t.startswith("www."):
+    if "://" in t or t.startswith("/"):
         return True
-    return bool("." in t and "/" in t)
+
+    hostname = ""
+    if url:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        hostname = parsed.netloc.lower()
+        if ":" in hostname:
+            hostname = hostname.split(":")[0]
+
+    t_lower = t.lower()
+    if hostname and "." in hostname and t_lower == hostname:
+        return True
+    # Title itself is a dotted hostname, e.g. en.wikipedia.org
+    if "." in t_lower and " " not in t_lower and "/" not in t_lower:
+        return True
+    # Hostname + path without a scheme, e.g. en.wikipedia.org/wiki/Main_Page
+    if "." in t and "/" in t:
+        return True
+    if t_lower == "page":
+        return True
+    if t_lower.startswith("www."):
+        return True
+    return False
 
 
 def format_navigate(url: str) -> str:
@@ -240,9 +270,15 @@ def format_describe() -> str:
     return "Looking at the page"
 
 
-def format_stop(result: str) -> str:
-    """Format task completion."""
-    return ensure_under_20_words(f"Done. {result}")
+def format_stop(result: str, title: str = "") -> str:
+    """Format task completion, optionally naming the final page (up to 30 words)."""
+    result_text = (result or "").strip()
+    page_title = (title or "").strip()
+    if page_title and not is_url_like(page_title):
+        spoken = f"Done. {result_text} You're on {page_title}."
+    else:
+        spoken = f"Done. {result_text}"
+    return ensure_under_n_words(spoken, 30)
 
 
 def page_changed(new_title: str, url: str = "") -> str:
