@@ -6,10 +6,11 @@ import structlog
 from celery import shared_task
 from django.conf import settings
 
+from core.agent.browser import FakeBrowserGateway
 from core.agent.browser_host import get_browser_host
-from core.agent.events import ChannelsEventPublisher
+from core.agent.events import ChannelsEventPublisher, EventPublisher
 from core.agent.llm import GeminiClient
-from core.agent.perception import PlaceholderPerceptionAgent
+from core.agent.perception import PerceptionAgent
 from core.agent.runner import TaskRunner
 from core.agent.safety import PlaceholderSafetyPolicy
 from core.enums import TaskMode, TaskStatus
@@ -18,46 +19,69 @@ from core.models import AgentTask
 logger = structlog.get_logger(__name__)
 
 
-def _execute_agent_task(task: AgentTask) -> None:
-    """Run the task on the process-wide BrowserHost loop so Chromium stays open."""
-    host = get_browser_host()
-    llm = GeminiClient()
-    policy = PlaceholderSafetyPolicy()
-    perception = PlaceholderPerceptionAgent()
-    publisher = ChannelsEventPublisher()
-    timeout = float(getattr(settings, "BROWSER_TASK_TIMEOUT_SECONDS", 1800))
-
+async def execute_on_host(
+    task: AgentTask,
+    host,
+    publisher: EventPublisher,
+    *,
+    llm: GeminiClient | None = None,
+    perception: PerceptionAgent | None = None,
+) -> None:
+    """Acquire the hosted browser (or skip if no page) and run Task or Perception runner."""
     session = task.session
     profile_dir = host._profile_dir(session)
     last_url = session.last_url or ""
     session_id = str(session.id)
+    perception = perception or PerceptionAgent()
+    llm = llm or GeminiClient()
+    policy = PlaceholderSafetyPolicy()
 
-    async def _run() -> None:
-        acquired = await host.acquire_async(session_id, profile_dir, last_url)
-        if task.mode == TaskMode.PERCEPTION:
-            from core.agent.perception_runner import PerceptionRunner
+    if task.mode == TaskMode.PERCEPTION:
+        from core.agent.perception_runner import PerceptionRunner
 
+        was_open = host.is_open(session_id)
+        if not was_open and not last_url.strip():
             runner = PerceptionRunner(
                 task_id=task.id,
-                browser=acquired.gateway,
+                browser=FakeBrowserGateway(),
                 publisher=publisher,
-                reopened_page=acquired.restored,
-            )
-            await runner.run()
-        else:
-            runner = TaskRunner(
-                task_id=task.id,
-                llm=llm,
-                browser=acquired.gateway,
-                policy=policy,
                 perception=perception,
-                publisher=publisher,
-                reopened_page=acquired.restored,
+                browser_was_open=False,
             )
             await runner.run()
+            return
+        acquired = await host.acquire_async(session_id, profile_dir, last_url)
+        runner = PerceptionRunner(
+            task_id=task.id,
+            browser=acquired.gateway,
+            publisher=publisher,
+            perception=perception,
+            reopened_page=acquired.restored,
+            browser_was_open=was_open,
+        )
+        await runner.run()
+        return
 
+    acquired = await host.acquire_async(session_id, profile_dir, last_url)
+    runner = TaskRunner(
+        task_id=task.id,
+        llm=llm,
+        browser=acquired.gateway,
+        policy=policy,
+        perception=perception,
+        publisher=publisher,
+        reopened_page=acquired.restored,
+    )
+    await runner.run()
+
+
+def _execute_agent_task(task: AgentTask) -> None:
+    """Run the task on the process-wide BrowserHost loop so Chromium stays open."""
+    host = get_browser_host()
+    publisher = ChannelsEventPublisher()
+    timeout = float(getattr(settings, "BROWSER_TASK_TIMEOUT_SECONDS", 1800))
     try:
-        host.submit(_run(), timeout=timeout)
+        host.submit(execute_on_host(task, host, publisher), timeout=timeout)
     finally:
         host.release(str(task.session_id))
 

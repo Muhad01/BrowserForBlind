@@ -18,7 +18,7 @@ from core.agent.narration import (
     format_task_started,
     is_url_like,
 )
-from core.agent.perception import PerceptionPort
+from core.agent.perception import PerceptionPort, PerceptionResult
 from core.agent.safety import SafetyPolicy, SafetyVerdict
 from core.agent.schema import NormalizedAction
 from core.agent.validator import ActionValidator, ValidationFailure
@@ -49,6 +49,7 @@ class TaskRunner:
         self.perception = perception
         self.publisher = publisher
         self.reopened_page = reopened_page
+        self._last_perception_answer = ""
 
     async def run(self) -> None:
         """Execute the main agent loop (FR-10)."""
@@ -302,6 +303,9 @@ class TaskRunner:
 
                 # ALLOW: Proceed with action execution
                 if normalized.action == ActionType.STOP:
+                    repeats_perception = self._repeats_last_perception(normalized.value)
+                    if repeats_perception:
+                        self._silence_last_perception_event()
                     await AgentAction.objects.acreate(
                         task=task,
                         sequence=sequence,
@@ -330,7 +334,7 @@ class TaskRunner:
                     task.final_url = final_url
                     await task.asave(update_fields=["result_text", "final_url", "updated_at"])
                     await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
-                    # FR-12, FR-22, FR-64
+                    # FR-12, FR-22, FR-64. Preceding perception_result speak is cleared when stop repeats it.
                     await self.publisher.publish(task, "task_completed", {
                         "speak": format_stop(normalized.value, final_title),
                         "result": normalized.value,
@@ -382,10 +386,25 @@ class TaskRunner:
                         "action": ActionType.DESCRIBE.value,
                         "step": sequence,
                     })
-                    description = await self.perception.describe(obs)
+                    capture = await self.browser.capture_for_perception()
+                    question = (normalized.value or "").strip()
+                    if question and hasattr(self.perception, "answer"):
+                        raw = await self.perception.answer(capture, question)
+                    else:
+                        raw = await self.perception.describe(capture)
+                    if isinstance(raw, PerceptionResult):
+                        result = raw
+                    else:
+                        result = PerceptionResult(text=str(raw))
+                    description = result.text
+                    self._last_perception_answer = description
                     await self.publisher.publish(task, "perception_result", {
-                        "speak": description,
+                        "speak": "" if question else description,
                         "text": description,
+                        "operation": "answer" if question else "describe",
+                        "uncertain": result.uncertain,
+                        "has_more": result.has_more,
+                        "model": result.model,
                     })
                     await AgentAction.objects.acreate(
                         task=task,
@@ -518,3 +537,25 @@ class TaskRunner:
             )
         except Exception as err:
             logger.error("Error inside _fail_task suppressed", task_id=str(task.id), error=str(err))
+
+    def _repeats_last_perception(self, stop_value: str) -> bool:
+        answer = (self._last_perception_answer or "").strip()
+        if not answer:
+            return False
+        spoken = (stop_value or "").strip()
+        if not spoken:
+            return False
+        if spoken == answer:
+            return True
+        return answer in spoken or spoken in answer
+
+    def _silence_last_perception_event(self) -> None:
+        events = getattr(self.publisher, "events", None)
+        if not events:
+            return
+        for event in reversed(events):
+            if event.get("event") == "perception_result":
+                payload = event.get("payload") or {}
+                payload["speak"] = ""
+                event["payload"] = payload
+                return

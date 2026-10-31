@@ -5,10 +5,10 @@ from django.contrib.auth import get_user_model
 from core.agent.browser import FakeBrowserGateway
 from core.agent.events import RecordingPublisher
 from core.agent.llm import FakeLLMClient, LLMUnavailable, Proposal
-from core.agent.perception import PlaceholderPerceptionAgent
+from core.agent.perception import PerceptionResult, PlaceholderPerceptionAgent
 from core.agent.runner import TaskRunner
 from core.agent.safety import PlaceholderSafetyPolicy, SafetyVerdict
-from core.agent.schema import ElementMeta, PageObservation, ProposedAction
+from core.agent.schema import ElementMeta, PageObservation, PerceptionCapture, ProposedAction
 from core.enums import ActionStatus, ActionType, SafetyDecision, SessionStatus, TaskMode, TaskStatus
 from core.errors import USER_MESSAGES, ErrorCode
 from core.models import AgentAction, AgentTask, BrowserProfile, BrowserSession
@@ -555,5 +555,72 @@ async def test_runner_retries_empty_title_after_url_change(runner_task):
         "Done. Found the article. You're on Artificial intelligence."
     )
     assert completed[0]["payload"]["final_title"] == "Artificial intelligence"
+
+
+class _AnsweringPerception:
+    async def describe(self, capture):
+        return PerceptionResult(text="A cricket scorecard.", model="fake")
+
+    async def answer(self, capture, question):
+        return PerceptionResult(text="Pakistan won by 5 wickets.", model="fake")
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_runner_describe_question_then_stop_no_double_speech(runner_task):
+    """describe with a question → answer in history → stop; perception speak is blanked."""
+    obs = PageObservation(
+        url="https://www.espncricinfo.com/live",
+        title="Pakistan vs New Zealand",
+        element_indexes={1},
+    )
+    capture = PerceptionCapture(
+        url=obs.url,
+        title=obs.title,
+        main_text="Pakistan won by 5 wickets. Babar Azam scored 80.",
+        headings=["Pakistan vs New Zealand"],
+        screenshot_png=b"jpeg",
+    )
+    browser = FakeBrowserGateway(pages=[obs, obs], captures=[capture])
+    answer = "Pakistan won by 5 wickets."
+    llm = FakeLLMClient(script=[
+        ProposedAction(
+            action="describe",
+            value="What is the final score of today's Pakistan match?",
+            reason="Read the result from the page.",
+        ),
+        ProposedAction(action="stop", value=answer, reason="Found the result."),
+    ])
+    publisher = RecordingPublisher()
+    runner = TaskRunner(
+        runner_task.id,
+        llm,
+        browser,
+        PlaceholderSafetyPolicy(),
+        _AnsweringPerception(),
+        publisher,
+    )
+    await runner.run()
+    await runner_task.arefresh_from_db()
+    assert runner_task.status == TaskStatus.COMPLETED
+    assert answer in runner_task.result_text
+
+    calls = llm.calls
+    assert "observed:" in calls[1]["history"][0].result
+    assert answer in calls[1]["history"][0].result
+
+    perc_events = [e for e in publisher.events if e["event"] == "perception_result"]
+    assert perc_events
+    assert perc_events[0]["payload"]["text"] == answer
+    assert perc_events[0]["payload"]["speak"] == ""
+
+    completed = [e for e in publisher.events if e["event"] == "task_completed"]
+    assert completed[0]["payload"]["speak"]
+    spoken_answers = [
+        e["payload"]["speak"]
+        for e in publisher.events
+        if answer in (e["payload"].get("speak") or "")
+    ]
+    assert len(spoken_answers) == 1
 
 

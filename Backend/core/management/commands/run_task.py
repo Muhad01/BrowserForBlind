@@ -3,16 +3,19 @@ from typing import Any
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.management.base import BaseCommand, CommandError
 
 from core.agent.browser_host import get_browser_host
 from core.agent.events import EventPublisher
-from core.agent.llm import GeminiClient
-from core.agent.perception import PlaceholderPerceptionAgent
-from core.agent.runner import TaskRunner
-from core.agent.safety import PlaceholderSafetyPolicy
 from core.enums import TaskMode, TaskStatus
 from core.models import AgentTask
+from core.services.commands import (
+    CommandIntent,
+    classify_command,
+    perception_op_key,
+    perception_question_key,
+)
 from core.services.tasks import create_task
 
 User = get_user_model()
@@ -71,52 +74,26 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.MIGRATE_HEADING(f"Creating task for '{username}': \"{goal}\""))
 
-        # For sync mode, don't dispatch to Celery
-        task = create_task(user, goal=goal, dispatch=not is_sync)
-        self.stdout.write(f"Created AgentTask id: {task.id} (Status: {task.status})")
+        intent = classify_command(goal)
+        mode = TaskMode.PERCEPTION if intent != CommandIntent.TASK else TaskMode.TASK
+        task = create_task(user, goal=goal, mode=mode, dispatch=not is_sync)
+        if mode == TaskMode.PERCEPTION:
+            cache.set(perception_op_key(str(task.id)), intent.value, 86_400)
+            cache.set(perception_question_key(str(task.id)), goal, 86_400)
+        self.stdout.write(f"Created AgentTask id: {task.id} (Status: {task.status}, Mode: {task.mode})")
 
         if is_sync:
             self.stdout.write(self.style.WARNING("Running task synchronously (inline) via BrowserHost..."))
             task.transition_to(TaskStatus.RUNNING)
 
-            llm = GeminiClient()
-            policy = PlaceholderSafetyPolicy()
-            perception = PlaceholderPerceptionAgent()
+            from core.tasks import execute_on_host
+
             publisher = ConsolePublisher(self.stdout, self.style)
             host = get_browser_host()
             timeout = float(getattr(settings, "BROWSER_TASK_TIMEOUT_SECONDS", 1800))
 
-            session = task.session
-            profile_dir = host._profile_dir(session)
-            last_url = session.last_url or ""
-            session_id = str(session.id)
-
-            async def _run() -> None:
-                acquired = await host.acquire_async(session_id, profile_dir, last_url)
-                if task.mode == TaskMode.PERCEPTION:
-                    from core.agent.perception_runner import PerceptionRunner
-
-                    runner = PerceptionRunner(
-                        task_id=task.id,
-                        browser=acquired.gateway,
-                        publisher=publisher,
-                        reopened_page=acquired.restored,
-                    )
-                    await runner.run()
-                else:
-                    runner = TaskRunner(
-                        task_id=task.id,
-                        llm=llm,
-                        browser=acquired.gateway,
-                        policy=policy,
-                        perception=perception,
-                        publisher=publisher,
-                        reopened_page=acquired.restored,
-                    )
-                    await runner.run()
-
             try:
-                host.submit(_run(), timeout=timeout)
+                host.submit(execute_on_host(task, host, publisher), timeout=timeout)
             except KeyboardInterrupt:
                 self.stdout.write(self.style.ERROR("Execution interrupted by user."))
             finally:
