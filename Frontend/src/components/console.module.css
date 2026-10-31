@@ -57,6 +57,22 @@
   margin: 0.4rem 0;
 }
 
+.perceptionMeta {
+  margin: 0 0 0.35rem;
+  font-weight: 700;
+}
+
+.uncertainLabel {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+}
+
+.perceptionText {
+  margin: 0;
+  font-size: 1.65rem;
+  line-height: 1.35;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

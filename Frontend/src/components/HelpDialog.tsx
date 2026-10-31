@@ -42,6 +42,7 @@ export function HelpDialog() {
         <li>S: settings</li>
         <li>Y or N: answer a confirmation</li>
         <li>Headphones are recommended so the microphone does not hear the app.</li>
+        <li>Say: what&apos;s on this page, read this page, continue, or ask a question about the page.</li>
       </ul>
       <button className={styles.secondary} type="button" onClick={() => dialogRef.current?.close()}>
         Close help

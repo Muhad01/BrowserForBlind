@@ -20,11 +20,18 @@ export interface LoggedFrame {
   receivedAt: string;
 }
 
+export interface PerceptionView {
+  text: string;
+  operation: string;
+  uncertain: boolean;
+}
+
 interface TaskState {
   task: TaskSnapshot | null;
   events: LoggedFrame[];
   pendingConfirmation: PendingConfirmation | null;
   latestSpeak: string;
+  perception: PerceptionView | null;
   replaceFromServer: (task: TaskSnapshot | null) => void;
   applyFrame: (frame: unknown) => { accepted: boolean; frame?: ServerFrame };
   clearConfirmation: () => void;
@@ -90,11 +97,27 @@ function applyStatus(task: TaskSnapshot | null, frame: ServerFrame): TaskSnapsho
   return { ...base, id: frame.task_id ?? base.id };
 }
 
+function perceptionFromPayload(payload: Record<string, unknown>): PerceptionView | null {
+  const text =
+    typeof payload.text === "string" && payload.text.trim()
+      ? payload.text.trim()
+      : speakFromPayload(payload).trim();
+  if (!text) {
+    return null;
+  }
+  return {
+    text,
+    operation: typeof payload.operation === "string" && payload.operation.trim() ? payload.operation : "describe",
+    uncertain: payload.uncertain === true,
+  };
+}
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   task: null,
   events: [],
   pendingConfirmation: null,
   latestSpeak: "",
+  perception: null,
   replaceFromServer: (task) =>
     set({
       task,
@@ -133,6 +156,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       events: [logged, ...get().events].slice(0, EVENT_CAP),
       pendingConfirmation: pending,
       latestSpeak: speak || get().latestSpeak,
+      perception:
+        raw.event === "perception_result"
+          ? perceptionFromPayload(raw.payload) ?? get().perception
+          : get().perception,
     });
     return { accepted: true, frame: raw };
   },

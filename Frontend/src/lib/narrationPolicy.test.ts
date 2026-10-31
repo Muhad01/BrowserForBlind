@@ -54,4 +54,21 @@ describe("decideNarration", () => {
       "Opening wikipedia.org",
     );
   });
+
+  it("speaks perception_result assertively in brief and detailed modes", () => {
+    const brief = decideNarration(frame("perception_result", "A Wikipedia article about AI."));
+    expect(brief.speakText).toBe("A Wikipedia article about AI.");
+    expect(brief.priority).toBe("assertive");
+    useSpeechStore.getState().setSettings({ verbosity: "detailed" });
+    const detailed = decideNarration(frame("perception_result", "A Wikipedia article about AI."));
+    expect(detailed.speakText).toBe("A Wikipedia article about AI.");
+    expect(detailed.priority).toBe("assertive");
+  });
+
+  it("does not speak silent task_completed", () => {
+    const decision = decideNarration(
+      frame("task_completed", "", { payload: { silent: true, result: "A Wikipedia article about AI." } }),
+    );
+    expect(decision.speakText).toBeNull();
+  });
 });

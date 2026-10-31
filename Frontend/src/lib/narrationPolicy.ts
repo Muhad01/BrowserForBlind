@@ -48,6 +48,19 @@ export function decideNarration(
     };
   }
 
+  if (frame.event === "perception_result") {
+    const text = full || (typeof frame.payload.text === "string" ? frame.payload.text : "");
+    return {
+      speakText: full.trim() ? full : null,
+      liveText: text,
+      priority: "assertive",
+    };
+  }
+
+  if (frame.event === "task_completed" && frame.payload.silent === true) {
+    return { speakText: null, liveText: full, priority: "assertive" };
+  }
+
   if (frame.event === "agent_status") {
     if (frame.request_id) {
       return { speakText: full || null, liveText: full, priority: "polite" };

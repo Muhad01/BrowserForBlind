@@ -59,6 +59,24 @@ describe("routeFrame", () => {
     expect(useTaskStore.getState().events).toHaveLength(6);
   });
 
+  it("stores perception_result text for the page description panel", () => {
+    routeFrame({
+      event: "perception_result",
+      task_id: "t1",
+      request_id: null,
+      payload: {
+        speak: "A Wikipedia article about AI.",
+        text: "A Wikipedia article about AI.",
+        operation: "describe",
+        uncertain: true,
+      },
+    });
+    const perception = useTaskStore.getState().perception;
+    expect(perception?.text).toBe("A Wikipedia article about AI.");
+    expect(perception?.operation).toBe("describe");
+    expect(perception?.uncertain).toBe(true);
+  });
+
   it("ignores unknown event names", () => {
     routeFrame({
       event: "task_started",

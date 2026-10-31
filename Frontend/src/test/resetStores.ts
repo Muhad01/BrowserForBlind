@@ -21,6 +21,7 @@ export function resetStores() {
     events: [],
     pendingConfirmation: null,
     latestSpeak: "",
+    perception: null,
   });
   useVoiceStore.setState({
     supported: true,

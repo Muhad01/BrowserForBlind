@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useMemo, useState } from "react";
 
 import { ConfirmationPrompt } from "@/components/ConfirmationPrompt";
 import { EventLog } from "@/components/EventLog";
+import { PageDescription } from "@/components/PageDescription";
 import { HelpDialog } from "@/components/HelpDialog";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import styles from "@/components/console.module.css";
@@ -218,6 +219,7 @@ export function VoiceConsole({
         </details>
       </section>
 
+      <PageDescription />
       <EventLog />
       <HelpDialog />
       <SettingsPanel />
