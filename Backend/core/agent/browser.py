@@ -1,18 +1,90 @@
 """Browser automation gateway interfacing with Chromium and Playwright (FR-10, FR-17)."""
 import asyncio
+import io
+import re
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import structlog
 from django.conf import settings
 
 from core.agent.narration import compute_accessible_name, compute_role, is_url_like
-from core.agent.schema import ElementMeta, ExecResult, NormalizedAction, PageObservation
+from core.agent.schema import (
+    ElementMeta,
+    ExecResult,
+    NormalizedAction,
+    PageObservation,
+    PerceptionCapture,
+)
 from core.enums import ActionType
 from core.errors import ErrorCode
 
 logger = structlog.get_logger(__name__)
+
+MAIN_TEXT_CAP = 30_000
+SCREENSHOT_MAX_WIDTH = 1280
+SCREENSHOT_JPEG_QUALITY = 70
+
+_PERCEPTION_DOM_JS = """
+(() => {
+  const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
+    .map((el) => (el.innerText || '').trim())
+    .filter(Boolean);
+  const landmarkFlags = {
+    nav: Boolean(document.querySelector('nav, [role="navigation"]')),
+    main: Boolean(document.querySelector('main, [role="main"]')),
+    search: Boolean(document.querySelector('[role="search"], input[type="search"]')),
+    form: Boolean(document.querySelector('form')),
+  };
+  const passwords = Array.from(document.querySelectorAll('input[type="password"]'))
+    .map((el) => el.value || '');
+  return {
+    headings,
+    landmarks: Object.keys(landmarkFlags).filter((key) => landmarkFlags[key]),
+    link_count: document.querySelectorAll('a[href]').length,
+    button_count: document.querySelectorAll('button, [role="button"], input[type="submit"]').length,
+    field_count: document.querySelectorAll('input, select, textarea').length,
+    password_values: passwords,
+    has_filled_password: passwords.some((value) => value.length > 0),
+  };
+})()
+"""
+
+
+def resize_screenshot_jpeg(data: bytes, max_width: int = SCREENSHOT_MAX_WIDTH, quality: int = SCREENSHOT_JPEG_QUALITY) -> bytes:
+    """Downscale a screenshot to max_width and re-encode as JPEG quality 70."""
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(data))
+    if image.width > max_width:
+        height = max(1, int(image.height * (max_width / image.width)))
+        image = image.resize((max_width, height), Image.Resampling.LANCZOS)
+    if image.mode not in {"RGB", "L"}:
+        image = image.convert("RGB")
+    elif image.mode == "L":
+        image = image.convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    return buffer.getvalue()
+
+
+def headings_from_markdown(text: str) -> list[str]:
+    """Collect ATX h1–h3 headings from extracted markdown."""
+    found: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"^(#{1,3})\s+(.+)$", line.strip())
+        if match:
+            found.append(match.group(2).strip())
+    return found
+
+
+def mask_secrets(text: str, secrets: list[str]) -> str:
+    masked = text
+    for secret in secrets:
+        if secret:
+            masked = masked.replace(secret, "********")
+    return masked
 
 
 class BrowserGateway(Protocol):
@@ -40,6 +112,10 @@ class BrowserGateway(Protocol):
 
     async def get_current_page_url(self) -> str:
         """Return the URL of the currently focused page."""
+        ...
+
+    async def capture_for_perception(self) -> PerceptionCapture:
+        """Capture URL, title, screenshot, and main text for the Perception Agent (FR-26)."""
         ...
 
 
@@ -290,6 +366,94 @@ class BrowserUseGateway:
             raise RuntimeError("Browser session has not been started.")
         return await self.session.get_current_page_url()
 
+    async def capture_for_perception(self) -> PerceptionCapture:
+        """Capture viewport screenshot, main text, and page structure (FR-26, NFR-SEC-07)."""
+        if not self.session:
+            raise RuntimeError("Browser session has not been started.")
+
+        url = "about:blank"
+        title = ""
+        try:
+            url = await self.session.get_current_page_url() or "about:blank"
+        except Exception as err:
+            logger.warning("perception_capture_url_failed", error=str(err))
+        try:
+            title = await self.session.get_current_page_title() or ""
+        except Exception as err:
+            logger.warning("perception_capture_title_failed", error=str(err))
+
+        meta = await self._collect_perception_dom()
+        has_filled_password = bool(meta.get("has_filled_password"))
+        secrets = [value for value in meta.get("password_values", []) if value]
+
+        main_text = ""
+        try:
+            from browser_use.dom.markdown_extractor import extract_clean_markdown
+
+            content, _stats = await extract_clean_markdown(
+                browser_session=self.session,
+                extract_links=False,
+                extract_images=False,
+            )
+            main_text = (content or "")[:MAIN_TEXT_CAP]
+        except Exception as err:
+            logger.warning("perception_markdown_failed", error=str(err))
+
+        if secrets:
+            main_text = mask_secrets(main_text, secrets)
+
+        headings = list(meta.get("headings") or [])
+        if not headings:
+            headings = headings_from_markdown(main_text)
+
+        screenshot: bytes | None = None
+        if not has_filled_password:
+            try:
+                raw = await self.session.take_screenshot(format="jpeg", quality=SCREENSHOT_JPEG_QUALITY)
+                screenshot = resize_screenshot_jpeg(raw)
+            except Exception as err:
+                logger.warning("perception_screenshot_failed", error=str(err))
+
+        return PerceptionCapture(
+            url=url,
+            title=title,
+            screenshot_png=screenshot,
+            main_text=main_text,
+            headings=headings,
+            landmarks=list(meta.get("landmarks") or []),
+            link_count=int(meta.get("link_count") or 0),
+            button_count=int(meta.get("button_count") or 0),
+            field_count=int(meta.get("field_count") or 0),
+            has_filled_password=has_filled_password,
+        )
+
+    async def _collect_perception_dom(self) -> dict[str, Any]:
+        empty: dict[str, Any] = {
+            "headings": [],
+            "landmarks": [],
+            "link_count": 0,
+            "button_count": 0,
+            "field_count": 0,
+            "password_values": [],
+            "has_filled_password": False,
+        }
+        try:
+            cdp_session = await self.session.get_or_create_cdp_session()
+            result = await cdp_session.cdp_client.send.Runtime.evaluate(
+                params={
+                    "expression": _PERCEPTION_DOM_JS,
+                    "returnByValue": True,
+                    "awaitPromise": False,
+                },
+                session_id=cdp_session.session_id,
+            )
+            value = (result or {}).get("result", {}).get("value")
+            if isinstance(value, dict):
+                return {**empty, **value}
+        except Exception as err:
+            logger.warning("perception_dom_eval_failed", error=str(err))
+        return empty
+
 
 class _FakeCdpSession:
     """Minimal session stand-in so BrowserHost health checks work in tests."""
@@ -313,11 +477,13 @@ class FakeBrowserGateway:
         fail_on_sequences: set[int] | None = None,
         crash_on_sequence: int | None = None,
         title_retries: list[str] | None = None,
+        captures: list[PerceptionCapture] | None = None,
     ):
         self.pages: list[PageObservation] = list(pages or [])
         self.fail_on_sequences = set(fail_on_sequences or set())
         self.crash_on_sequence = crash_on_sequence
         self.title_retries = list(title_retries or [])
+        self.captures: list[PerceptionCapture] = list(captures or [])
         self.executed_actions: list[NormalizedAction] = []
         self.action_counter = 0
         self.is_closed = False
@@ -366,3 +532,20 @@ class FakeBrowserGateway:
         if self.session is None:
             raise RuntimeError("Browser session has not been started.")
         return await self.session.get_current_page_url()
+
+    async def capture_for_perception(self) -> PerceptionCapture:
+        if self.captures:
+            return self.captures.pop(0)
+        page = self.pages[0] if self.pages else PageObservation(url="https://example.com", title="Example Domain")
+        return PerceptionCapture(
+            url=page.url,
+            title=page.title,
+            screenshot_png=b"fake-jpeg",
+            main_text=f"{page.title}\n\nExample page text for tests.",
+            headings=[page.title] if page.title else [],
+            landmarks=["main"],
+            link_count=1,
+            button_count=0,
+            field_count=0,
+            has_filled_password=False,
+        )

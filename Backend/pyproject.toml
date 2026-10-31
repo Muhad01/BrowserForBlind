@@ -22,6 +22,7 @@ dependencies = [
     "browser-use==0.13.14",
     "google-genai",
     "structlog",
+    "pillow",
 ]
 
 [project.optional-dependencies]

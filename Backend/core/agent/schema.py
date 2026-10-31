@@ -75,3 +75,20 @@ class ExecResult(BaseModel):
     detail: str = ""
     duration_ms: int = 0
 
+
+class PerceptionCapture(BaseModel):
+    """Page snapshot for the Perception Agent (FR-26). screenshot_png holds JPEG bytes."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    url: str = ""
+    title: str = ""
+    screenshot_png: bytes | None = None
+    main_text: str = ""
+    headings: list[str] = Field(default_factory=list)
+    landmarks: list[str] = Field(default_factory=list)
+    link_count: int = 0
+    button_count: int = 0
+    field_count: int = 0
+    has_filled_password: bool = False
+
