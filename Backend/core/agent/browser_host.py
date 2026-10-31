@@ -209,39 +209,40 @@ class BrowserHost:
         last_url: str = "",
     ) -> AcquireResult:
         sid = str(session_id)
+        last_url = (last_url or "").strip()
         entry = self._entries.get(sid)
         if entry is not None:
             if await self._is_healthy(entry.gateway):
-                entry.last_used = self.clock()
-                return AcquireResult(
-                    gateway=entry.gateway,
-                    started_fresh=False,
-                    restored=False,
-                    last_url=last_url or "",
-                )
-            logger.warning("browser_host_unhealthy_restart", session_id=sid)
-            await self.close_async(sid)
+                current = await self._current_url(entry.gateway)
+                if last_url and _is_blank_url(current):
+                    restored = await self._navigate_last_url(entry.gateway, last_url, sid)
+                    if restored:
+                        entry.last_used = self.clock()
+                        return AcquireResult(
+                            gateway=entry.gateway,
+                            started_fresh=False,
+                            restored=True,
+                            last_url=last_url,
+                        )
+                    logger.warning("browser_host_blank_restore_failed", session_id=sid)
+                    await self.close_async(sid)
+                else:
+                    entry.last_used = self.clock()
+                    return AcquireResult(
+                        gateway=entry.gateway,
+                        started_fresh=False,
+                        restored=False,
+                        last_url=last_url or "",
+                    )
+            else:
+                logger.warning("browser_host_unhealthy_restart", session_id=sid)
+                await self.close_async(sid)
 
         gateway = self._factory()
         await gateway.start(profile_dir)
-        last_url = (last_url or "").strip()
         restored = False
         if last_url:
-            nav = NormalizedAction(
-                action=ActionType.NAVIGATE,
-                target=last_url,
-                reason="Restore last open page after browser restart.",
-            )
-            try:
-                await gateway.execute(nav)
-                restored = True
-            except Exception as err:
-                logger.warning(
-                    "browser_host_restore_failed",
-                    session_id=sid,
-                    last_url=last_url,
-                    error=str(err),
-                )
+            restored = await self._navigate_last_url(gateway, last_url, sid)
         hosted = _HostedBrowser(
             gateway=gateway,
             session_id=sid,
@@ -298,6 +299,39 @@ class BrowserHost:
         except asyncio.CancelledError:
             return
 
+    async def _navigate_last_url(self, gateway: BrowserGateway, last_url: str, session_id: str) -> bool:
+        nav = NormalizedAction(
+            action=ActionType.NAVIGATE,
+            target=last_url,
+            reason="Restore last open page after browser restart.",
+        )
+        try:
+            await gateway.execute(nav)
+            return True
+        except Exception as err:
+            logger.warning(
+                "browser_host_restore_failed",
+                session_id=session_id,
+                last_url=last_url,
+                error=str(err),
+            )
+            return False
+
+    async def _current_url(self, gateway: BrowserGateway) -> str:
+        getter = getattr(gateway, "get_current_page_url", None)
+        if getter is None:
+            session = getattr(gateway, "session", None)
+            getter = getattr(session, "get_current_page_url", None) if session is not None else None
+        if getter is None:
+            return ""
+        try:
+            result = getter()
+            if asyncio.iscoroutine(result):
+                result = await result
+            return str(result or "")
+        except Exception:
+            return ""
+
     async def _is_healthy(self, gateway: BrowserGateway) -> bool:
         session = getattr(gateway, "session", None)
         if session is None:
@@ -326,6 +360,11 @@ class BrowserHost:
             return session.profile.path
         user_id = session.user_id
         return Path(settings.BROWSER_PROFILE_ROOT) / str(user_id) / "default"
+
+
+def _is_blank_url(url: str) -> bool:
+    cleaned = (url or "").strip().lower()
+    return cleaned in {"", "about:blank", "chrome://newtab", "chrome://new-tab-page/"}
 
 
 _HOST: BrowserHost | None = None

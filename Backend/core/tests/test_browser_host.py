@@ -103,6 +103,22 @@ def test_close_session_closes_hosted_browser(host, hosted_session):
 
 
 @pytest.mark.django_db
+def test_blank_live_browser_restores_last_url(host, hosted_session):
+    hosted_session.last_url = "https://en.wikipedia.org/wiki/Artificial_intelligence"
+    hosted_session.save(update_fields=["last_url"])
+    first = host.acquire(hosted_session)
+    first.gateway.session._url = "about:blank"
+    second = host.acquire(hosted_session)
+    assert second.gateway is first.gateway
+    assert second.restored is True
+    assert any(
+        action.action == ActionType.NAVIGATE
+        and action.target == hosted_session.last_url
+        for action in second.gateway.executed_actions
+    )
+
+
+@pytest.mark.django_db
 def test_last_url_restore_navigates_first(hosted_session):
     hosted_session.last_url = "https://en.wikipedia.org/wiki/Artificial_intelligence"
     hosted_session.save(update_fields=["last_url"])
