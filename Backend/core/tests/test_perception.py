@@ -6,11 +6,15 @@ from google.genai.errors import APIError
 
 from core.agent.model_pool import ModelPool
 from core.agent.perception import (
+    ANSWER_TEXT_CHARS,
+    DESCRIBE_TEXT_CHARS,
     MODEL_FAILURE_TEXT,
     PerceptionAgent,
     PerceptionResult,
+    article_text_for_prompt,
     filter_boilerplate,
     is_unusable_capture,
+    rank_paragraphs_for_question,
     recency_instruction,
     split_reading_chunks,
 )
@@ -170,6 +174,34 @@ async def test_injection_text_does_not_change_output_format():
     assert result.text
     assert "<" not in result.text
     assert "hacked" not in result.text.lower()
+
+
+def test_rank_paragraphs_prefers_question_overlap_and_caps_length():
+    menu = "Home News Sport Culture Weather Menu"
+    lead = "The Dartmouth workshop founded the field of artificial intelligence in 1956."
+    noise = "Subscribe to our newsletter for more stories about cooking and travel."
+    match = "Pakistan won the cricket match by 3 wickets at the National Stadium."
+    filler = ("lorem ipsum dolor sit amet " * 400).strip()
+    text = "\n\n".join([menu, lead, noise, match, filler])
+    ranked = rank_paragraphs_for_question(text, "What was the Pakistan cricket match result?")
+    assert "3 wickets" in ranked
+    assert len(ranked) <= ANSWER_TEXT_CHARS
+    # The huge unrelated filler should not crowd out the matching paragraph.
+    assert ranked.index("Pakistan won") < ranked.find("lorem ipsum") if "lorem ipsum" in ranked else True
+
+
+def test_describe_payload_uses_article_not_menu():
+    capture = PerceptionCapture(
+        url="https://en.wikipedia.org/wiki/Artificial_intelligence",
+        title="Artificial intelligence",
+        main_text="Main menu\n\nJump to content\n\n" + ("nav link " * 80) + "\n\nArtificial intelligence is the capability of computational systems.",
+        article_text="Artificial intelligence is the capability of computational systems to perform tasks typically associated with human intelligence.",
+        headings=["Artificial intelligence"],
+    )
+    payload = article_text_for_prompt(capture)
+    assert payload.startswith("Artificial intelligence is the capability")
+    assert "Main menu" not in payload
+    assert len(payload) <= DESCRIBE_TEXT_CHARS
 
 
 def test_recency_instruction_includes_karachi_date():

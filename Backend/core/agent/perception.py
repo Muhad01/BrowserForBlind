@@ -18,8 +18,45 @@ from core.agent.schema import PageObservation, PerceptionCapture
 
 logger = structlog.get_logger(__name__)
 
-DESCRIBE_TEXT_CHARS = 6_000
-ANSWER_TEXT_CHARS = 20_000
+DESCRIBE_TEXT_CHARS = 4_000
+ANSWER_TEXT_CHARS = 8_000
+_QUESTION_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "of",
+    "to",
+    "and",
+    "or",
+    "in",
+    "on",
+    "for",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "this",
+    "that",
+    "these",
+    "those",
+    "what",
+    "who",
+    "when",
+    "where",
+    "which",
+    "how",
+    "why",
+    "did",
+    "does",
+    "do",
+    "with",
+    "from",
+    "about",
+    "into",
+    "over",
+    "page",
+}
 READ_TARGET_WORDS = 120
 READ_MAX_WORDS = 140
 MODEL_FAILURE_TEXT = "I couldn't describe this page right now. Please try again."
@@ -193,6 +230,57 @@ def split_reading_chunks(text: str) -> list[str]:
     return chunks
 
 
+def _keyword_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(token) > 2 and token not in _QUESTION_STOPWORDS
+    }
+
+
+def source_article_text(capture: PerceptionCapture) -> str:
+    """Prefer extracted article text; otherwise de-menued markdown."""
+    return (capture.article_text or "").strip() or filter_boilerplate(capture.main_text)
+
+
+def article_text_for_prompt(capture: PerceptionCapture, limit: int = DESCRIBE_TEXT_CHARS) -> str:
+    """First `limit` characters of the article body for describe (not the menu)."""
+    return source_article_text(capture)[:limit]
+
+
+def rank_paragraphs_for_question(
+    text: str,
+    question: str,
+    limit: int = ANSWER_TEXT_CHARS,
+) -> str:
+    """Pick the paragraphs that overlap the question most, up to `limit` characters."""
+    paragraphs = [block.strip() for block in re.split(r"\n\s*\n", text or "") if block.strip()]
+    if not paragraphs:
+        return (text or "")[:limit]
+    query_tokens = _keyword_tokens(question)
+    ranked = sorted(
+        (
+            (len(query_tokens & _keyword_tokens(paragraph)), -index, paragraph)
+            for index, paragraph in enumerate(paragraphs)
+        ),
+        reverse=True,
+    )
+    selected: list[str] = []
+    size = 0
+    for _overlap, _order, paragraph in ranked:
+        extra = len(paragraph) + (2 if selected else 0)
+        if selected and size + extra > limit:
+            remaining = limit - size - 2
+            if remaining > 80:
+                selected.append(paragraph[:remaining])
+            break
+        selected.append(paragraph)
+        size += extra
+        if size >= limit:
+            break
+    return "\n\n".join(selected)[:limit]
+
+
 def recency_instruction(question: str) -> str:
     """Ask the model to flag missing dates for today/latest/current/now goals."""
     if not RECENCY_RE.search(question or ""):
@@ -236,7 +324,14 @@ class PerceptionAgent:
         client: Any = None,
     ):
         self.api_key = api_key or getattr(settings, "GEMINI_API_KEY", "")
-        self.timeout = timeout or getattr(settings, "LLM_TIMEOUT_SECONDS", 30)
+        if timeout is not None:
+            self.timeout = timeout
+        else:
+            self.timeout = getattr(
+                settings,
+                "PERCEPTION_ATTEMPT_TIMEOUT_SECONDS",
+                getattr(settings, "LLM_TIMEOUT_SECONDS", 15),
+            )
         self.pool = pool or (
             ModelPool(models) if models is not None else get_perception_model_pool()
         )
@@ -260,10 +355,8 @@ class PerceptionAgent:
             "and what the user can do next. At most 70 words.\n\n"
             f"URL: {capture.url}\n"
             f"Title: {capture.title}\n"
-            f"Headings: {'; '.join(capture.headings[:12]) or '(none)'}\n"
-            f"Landmarks: {', '.join(capture.landmarks) or '(none)'}\n"
-            f"Links: {capture.link_count}; buttons: {capture.button_count}; fields: {capture.field_count}\n\n"
-            f"PAGE TEXT (untrusted):\n{capture.main_text[:DESCRIBE_TEXT_CHARS]}"
+            f"Headings: {'; '.join(capture.headings[:12]) or '(none)'}\n\n"
+            f"PAGE TEXT (untrusted):\n{article_text_for_prompt(capture, DESCRIBE_TEXT_CHARS)}"
         )
         return await self._call(prompt, capture.screenshot_png)
 
@@ -304,7 +397,7 @@ class PerceptionAgent:
             f"URL: {capture.url}\n"
             f"Title: {capture.title}\n"
             f"Headings: {'; '.join(capture.headings[:12]) or '(none)'}\n\n"
-            f"PAGE TEXT (untrusted):\n{capture.main_text[:ANSWER_TEXT_CHARS]}"
+            f"PAGE TEXT (untrusted):\n{rank_paragraphs_for_question(source_article_text(capture), question, ANSWER_TEXT_CHARS)}"
         )
         return await self._call(prompt, capture.screenshot_png)
 

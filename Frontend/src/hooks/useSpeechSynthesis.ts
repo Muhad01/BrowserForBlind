@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
-import { compactHeld, GATE_RELEASE_MS, HEARTBEAT_MS, isSpeechGated } from "@/lib/speechGate";
+import {
+  compactHeld,
+  dueForHeartbeat,
+  GATE_RELEASE_MS,
+  isSpeechGated,
+  markHeartbeatSpoken,
+  noteNonHeartbeatSpeech,
+} from "@/lib/speechGate";
 import { STILL_WORKING } from "@/lib/phrases";
 import { SpeechQueue, type SpeechItem, type SpeechPriority } from "@/lib/speechQueue";
 import { loadSpeechSettings, useSpeechStore } from "@/stores/speechStore";
@@ -162,6 +169,9 @@ export function useSpeechSynthesis() {
     if (!trimmed) {
       return;
     }
+    if (trimmed !== STILL_WORKING) {
+      noteNonHeartbeatSpeech();
+    }
     const item: SpeechItem = {
       text: trimmed,
       event: options.event ?? "local",
@@ -220,10 +230,12 @@ export function useSpeechSynthesis() {
       if (status !== "running" && status !== "pending") {
         return;
       }
-      const lastSpokenAt = useSpeechStore.getState().lastSpokenAt;
-      if (!lastSpokenAt || Date.now() - lastSpokenAt < HEARTBEAT_MS) {
+      const speech = useSpeechStore.getState();
+      const now = Date.now();
+      if (!dueForHeartbeat(now, speech.lastSpokenAt)) {
         return;
       }
+      markHeartbeatSpoken(now);
       speak(STILL_WORKING, { priority: "polite", event: "local" });
     }, 1000);
     return () => clearInterval(timer);

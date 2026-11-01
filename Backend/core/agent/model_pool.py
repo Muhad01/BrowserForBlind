@@ -28,10 +28,13 @@ def is_daily_quota_error(error_message: str) -> bool:
 class ModelPool:
     """Manages priority-ordered model fallback and cooldowns (NFR-REL-01, NFR-OPS-02)."""
 
+    TIMEOUT_STREAK_ESCALATION = 1800.0
+
     def __init__(self, models: list[str], clock: Callable[[], float] = time.time):
         self.models: list[str] = list(models)
         self.clock: Callable[[], float] = clock
         self._cooldowns: dict[str, float] = {}
+        self._timeout_streak: dict[str, int] = {}
 
     def available(self) -> list[str]:
         """Return available models in priority order, excluding those currently on cooldown."""
@@ -51,10 +54,30 @@ class ModelPool:
             logger.warning("model_rate_limited", model=model, cooldown_until=until)
 
     def mark_server_error(self, model: str, seconds: float = 30.0) -> None:
-        """Mark model in cooldown following 500/503/timeout (30 seconds)."""
+        """Mark model in cooldown following 500/503 (30 seconds)."""
         now = self.clock()
         self._cooldowns[model] = now + seconds
         logger.warning("model_server_error_cooldown", model=model, cooldown_seconds=seconds)
+
+    def mark_timeout(self, model: str, seconds: float | None = None) -> None:
+        """Cooldown after a timed-out attempt. Two timeouts in a row → 30 minutes."""
+        if seconds is None:
+            try:
+                from django.conf import settings
+
+                seconds = float(getattr(settings, "MODEL_TIMEOUT_COOLDOWN_SECONDS", 600))
+            except Exception:
+                seconds = 600.0
+        streak = self._timeout_streak.get(model, 0) + 1
+        self._timeout_streak[model] = streak
+        cooldown = self.TIMEOUT_STREAK_ESCALATION if streak >= 2 else float(seconds)
+        self._cooldowns[model] = self.clock() + cooldown
+        logger.warning(
+            "model_timeout_cooldown",
+            model=model,
+            cooldown_seconds=cooldown,
+            streak=streak,
+        )
 
     def mark_permanent_failure(self, model: str) -> None:
         """Mark model unavailable for the rest of the process (e.g. 400/403/404)."""
@@ -64,6 +87,7 @@ class ModelPool:
     def mark_ok(self, model: str) -> None:
         """Clear active cooldown for model on successful response."""
         self._cooldowns.pop(model, None)
+        self._timeout_streak.pop(model, None)
 
     def get_cooldown_until(self, model: str) -> float | None:
         """Return timestamp when model cooldown expires, or None if not on cooldown."""
@@ -100,7 +124,7 @@ def get_perception_model_pool() -> ModelPool:
         models = getattr(
             settings,
             "GEMINI_PERCEPTION_MODELS",
-            ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+            ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"],
         )
         _PERCEPTION_POOL = ModelPool(models)
     return _PERCEPTION_POOL

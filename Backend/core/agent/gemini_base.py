@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -25,6 +26,15 @@ logger = structlog.get_logger(__name__)
 ParseFn = Callable[[str], Any]
 
 
+def _log_attempt(model: str, started: float, outcome: str) -> None:
+    logger.info(
+        "llm_attempt",
+        model=model,
+        ms=int((time.perf_counter() - started) * 1000),
+        outcome=outcome,
+    )
+
+
 async def generate_with_fallback(
     *,
     client: Any,
@@ -39,6 +49,7 @@ async def generate_with_fallback(
 
     JSON/schema failures retry the same model once, then raise LLMBadOutput without
     falling through (matching the Task Agent contract). Transport failures fall through.
+    Each attempt is independently timed out so one slow model cannot consume the whole budget.
     """
     available_models = pool.available()
     if not available_models:
@@ -53,6 +64,7 @@ async def generate_with_fallback(
         failure_reason = ""
 
         for parse_attempt in range(2):
+            started = time.perf_counter()
             try:
                 coro = client.aio.models.generate_content(
                     model=model,
@@ -63,18 +75,22 @@ async def generate_with_fallback(
                 raw_text = getattr(response, "text", "") or ""
 
                 if not raw_text:
+                    _log_attempt(model, started, "empty")
                     if parse_attempt == 0:
                         continue
                     raise LLMBadOutput(f"Gemini model {model} returned empty response twice.")
 
                 parsed = parse(raw_text)
                 pool.mark_ok(model)
+                _log_attempt(model, started, "ok")
                 return parsed, model
 
             except LLMBadOutput:
+                _log_attempt(model, started, "bad_output")
                 raise
 
             except (ValidationError, json.JSONDecodeError) as err:
+                _log_attempt(model, started, "bad_json")
                 if parse_attempt == 0:
                     continue
                 raise LLMBadOutput(
@@ -82,13 +98,13 @@ async def generate_with_fallback(
                 ) from err
 
             except TimeoutError:
+                _log_attempt(model, started, "timeout")
                 model_failed = True
-                pool.mark_server_error(model, seconds=30.0)
+                pool.mark_timeout(model)
                 failure_reason = "timeout"
                 break
 
             except APIError as err:
-                model_failed = True
                 code = getattr(err, "code", None)
                 try:
                     code_int = int(code) if code is not None else None
@@ -100,21 +116,28 @@ async def generate_with_fallback(
                     is_daily = is_daily_quota_error(err_str)
                     pool.mark_rate_limited(model, daily=is_daily)
                     failure_reason = f"rate limited (429, daily={is_daily})"
+                    outcome = "rate_limited"
                 elif code_int in {500, 502, 503, 504} or any(
                     s in err_str.lower() for s in ["503", "500", "unavailable", "server error"]
                 ):
                     pool.mark_server_error(model, seconds=30.0)
                     failure_reason = f"server error ({code_int or '5xx'})"
+                    outcome = "server_error"
                 elif code_int is not None and 400 <= code_int < 500:
                     logger.error("gemini_client_error", model=model, code=code_int, error=err_str)
                     pool.mark_permanent_failure(model)
                     failure_reason = f"client error ({code_int})"
+                    outcome = "client_error"
                 else:
                     pool.mark_server_error(model, seconds=30.0)
                     failure_reason = f"api error: {err_str}"
+                    outcome = "api_error"
+                _log_attempt(model, started, outcome)
+                model_failed = True
                 break
 
             except Exception as err:
+                _log_attempt(model, started, "error")
                 model_failed = True
                 pool.mark_server_error(model, seconds=30.0)
                 failure_reason = f"unexpected error: {err}"

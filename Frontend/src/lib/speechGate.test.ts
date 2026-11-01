@@ -1,11 +1,41 @@
 import { describe, expect, it } from "vitest";
 
-import { compactHeld } from "@/lib/speechGate";
+import {
+  compactHeld,
+  dueForHeartbeat,
+  markHeartbeatSpoken,
+  nextHeartbeatDelayMs,
+  resetHeartbeatState,
+} from "@/lib/speechGate";
 import type { SpeechItem } from "@/lib/speechQueue";
 
 function item(text: string, event: string, priority: "polite" | "assertive" = "polite"): SpeechItem {
   return { text, event, priority };
 }
+
+describe("nextHeartbeatDelayMs", () => {
+  it("backs off 12s, then 30s, then 45s with a 30s floor after the first", () => {
+    expect(nextHeartbeatDelayMs(0)).toBe(12_000);
+    expect(nextHeartbeatDelayMs(1)).toBe(30_000);
+    expect(nextHeartbeatDelayMs(2)).toBe(45_000);
+    expect(nextHeartbeatDelayMs(5)).toBe(45_000);
+  });
+});
+
+describe("dueForHeartbeat", () => {
+  it("fires at 12s, then not until 30s, then every 45s", () => {
+    resetHeartbeatState();
+    const spokenAt = 1_000_000;
+    expect(dueForHeartbeat(spokenAt + 11_000, spokenAt)).toBe(false);
+    expect(dueForHeartbeat(spokenAt + 12_000, spokenAt)).toBe(true);
+    markHeartbeatSpoken(spokenAt + 12_000);
+    expect(dueForHeartbeat(spokenAt + 12_000 + 29_000, spokenAt + 12_000)).toBe(false);
+    expect(dueForHeartbeat(spokenAt + 12_000 + 30_000, spokenAt + 12_000)).toBe(true);
+    markHeartbeatSpoken(spokenAt + 42_000);
+    expect(dueForHeartbeat(spokenAt + 42_000 + 44_000, spokenAt + 42_000)).toBe(false);
+    expect(dueForHeartbeat(spokenAt + 42_000 + 45_000, spokenAt + 42_000)).toBe(true);
+  });
+});
 
 describe("compactHeld", () => {
   it("keeps only the latest progress item plus completions", () => {

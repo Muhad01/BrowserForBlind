@@ -68,7 +68,14 @@ class GeminiClient:
         client: Any | None = None,
     ):
         self.api_key = api_key or getattr(settings, "GEMINI_API_KEY", "")
-        self.timeout = timeout or getattr(settings, "LLM_TIMEOUT_SECONDS", 30)
+        if timeout is not None:
+            self.timeout = timeout
+        else:
+            self.timeout = getattr(
+                settings,
+                "TASK_ATTEMPT_TIMEOUT_SECONDS",
+                getattr(settings, "LLM_TIMEOUT_SECONDS", 12),
+            )
         self.pool = pool or (ModelPool(models) if models is not None else get_task_model_pool())
         self.client = client or genai.Client(api_key=self.api_key)
 

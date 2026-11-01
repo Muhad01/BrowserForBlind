@@ -1,4 +1,5 @@
 import { resetDisconnectNarration } from "@/lib/disconnectNarration";
+import { resetHeartbeatState } from "@/lib/speechGate";
 import { resetNarrationPolicy } from "@/lib/narrationPolicy";
 import { useAuthStore } from "@/stores/authStore";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -14,6 +15,7 @@ export function resetStores() {
   }
   resetNarrationPolicy();
   resetDisconnectNarration();
+  resetHeartbeatState();
   useAuthStore.setState({ user: null, status: "unknown" });
   useConnectionStore.setState({ status: "closed", client: null });
   useTaskStore.setState({

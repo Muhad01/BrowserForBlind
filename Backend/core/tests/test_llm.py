@@ -136,6 +136,21 @@ async def test_bad_json_retries_same_model_then_raises(sample_obs):
 
 
 @pytest.mark.asyncio
+async def test_timeout_falls_back_and_cools_down(sample_obs):
+    current_time = 1000.0
+    pool = ModelPool(["model-a", "model-b"], clock=lambda: current_time)
+    valid_json = '{"action": "stop", "target": "", "value": "Done", "reason": "Ok", "requires_confirmation": false}'
+    mock_client = MockGenAIClient({
+        "model-a": [TimeoutError()],
+        "model-b": [MockResponse(valid_json)],
+    })
+    client = GeminiClient(pool=pool, client=mock_client, timeout=1)
+    proposal = await client.propose("Goal", [], sample_obs)
+    assert proposal.model == "model-b"
+    assert pool.get_cooldown_until("model-a") == 1600.0
+
+
+@pytest.mark.asyncio
 async def test_all_models_unavailable_raises_with_reasons(sample_obs):
     pool = ModelPool(["model-a", "model-b"])
     err_503 = APIError(503, {"error": {"message": "Service unavailable"}})

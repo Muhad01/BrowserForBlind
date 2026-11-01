@@ -85,6 +85,7 @@ class PerceptionCapture(BaseModel):
     title: str = ""
     screenshot_png: bytes | None = None
     main_text: str = ""
+    article_text: str = ""
     headings: list[str] = Field(default_factory=list)
     landmarks: list[str] = Field(default_factory=list)
     link_count: int = 0

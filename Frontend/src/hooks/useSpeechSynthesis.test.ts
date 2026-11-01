@@ -140,4 +140,44 @@ describe("useSpeechSynthesis", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(spokenTexts()).toEqual(["Still working."]);
   });
+
+  it("backs off heartbeats to 30s then 45s and never faster than 30s after the first", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+    useTaskStore.setState({
+      task: {
+        id: "t1",
+        goal: "search",
+        mode: "task",
+        status: "running",
+        result_text: null,
+        error_code: null,
+        error_message: null,
+        final_url: null,
+        step_count: 1,
+        created_at: null,
+        finished_at: null,
+        pending_confirmation: null,
+      },
+    });
+    useSpeechStore.setState({ lastSpokenAt: 2_000_000, lastSpoken: "Working on it." });
+    renderHook(() => useSpeechSynthesis());
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(spokenTexts()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spokenTexts()).toEqual(["Still working."]);
+    (speakMock.mock.calls.at(-1)?.[0] as MockUtterance).onend?.();
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(spokenTexts()).toEqual(["Still working."]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spokenTexts()).toEqual(["Still working.", "Still working."]);
+    (speakMock.mock.calls.at(-1)?.[0] as MockUtterance).onend?.();
+
+    await vi.advanceTimersByTimeAsync(44_000);
+    expect(spokenTexts()).toEqual(["Still working.", "Still working."]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spokenTexts()).toEqual(["Still working.", "Still working.", "Still working."]);
+  });
 });

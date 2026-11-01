@@ -91,6 +91,33 @@ def test_model_pool_server_error_and_mark_ok():
     assert pool.available() == ["model-a", "model-b"]
 
 
+def test_timeout_cooldown_escalates_on_second_streak():
+    current_time = 1000.0
+    pool = ModelPool(["model-a", "model-b"], clock=lambda: current_time)
+
+    pool.mark_timeout("model-a", seconds=600)
+    assert pool.available() == ["model-b"]
+    until = pool.get_cooldown_until("model-a")
+    assert until == 1600.0
+
+    current_time = 1601.0
+    assert pool.available() == ["model-a", "model-b"]
+
+    pool.mark_timeout("model-a", seconds=600)
+    until = pool.get_cooldown_until("model-a")
+    assert until == current_time + 1800.0
+    assert pool.available() == ["model-b"]
+
+
+def test_timeout_streak_resets_on_success():
+    current_time = 1000.0
+    pool = ModelPool(["model-a"], clock=lambda: current_time)
+    pool.mark_timeout("model-a", seconds=600)
+    pool.mark_ok("model-a")
+    pool.mark_timeout("model-a", seconds=600)
+    assert pool.get_cooldown_until("model-a") == 1600.0
+
+
 def test_model_pool_permanent_failure():
     current_time = 1000.0
     models = ["model-a", "model-b"]

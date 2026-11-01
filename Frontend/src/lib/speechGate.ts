@@ -8,6 +8,49 @@ export const GATE_RELEASE_MS = 400;
 export const PROCESSING_MS = 3000;
 export const EARCON_MS = 150;
 export const HEARTBEAT_MS = 12_000;
+export const HEARTBEAT_FIRST_MS = 12_000;
+export const HEARTBEAT_SECOND_MS = 30_000;
+export const HEARTBEAT_LATER_MS = 45_000;
+export const HEARTBEAT_MIN_GAP_AFTER_FIRST_MS = 30_000;
+
+let heartbeatCount = 0;
+let lastHeartbeatAt = 0;
+
+export function nextHeartbeatDelayMs(count: number): number {
+  if (count <= 0) {
+    return HEARTBEAT_FIRST_MS;
+  }
+  if (count === 1) {
+    return Math.max(HEARTBEAT_SECOND_MS, HEARTBEAT_MIN_GAP_AFTER_FIRST_MS);
+  }
+  return Math.max(HEARTBEAT_LATER_MS, HEARTBEAT_MIN_GAP_AFTER_FIRST_MS);
+}
+
+export function resetHeartbeatState(): void {
+  heartbeatCount = 0;
+  lastHeartbeatAt = 0;
+}
+
+export function noteNonHeartbeatSpeech(): void {
+  heartbeatCount = 0;
+}
+
+export function dueForHeartbeat(now: number, lastSpokenAt: number): boolean {
+  const delay = nextHeartbeatDelayMs(heartbeatCount);
+  const anchor = heartbeatCount === 0 ? lastSpokenAt : lastHeartbeatAt;
+  if (!anchor || now - anchor < delay) {
+    return false;
+  }
+  if (heartbeatCount >= 1 && now - lastHeartbeatAt < HEARTBEAT_MIN_GAP_AFTER_FIRST_MS) {
+    return false;
+  }
+  return true;
+}
+
+export function markHeartbeatSpoken(now: number): void {
+  heartbeatCount += 1;
+  lastHeartbeatAt = now;
+}
 export const AGENT_STATUS_THROTTLE_MS = 6_000;
 export const LISTEN_TIMEOUT_MS = 15_000;
 
