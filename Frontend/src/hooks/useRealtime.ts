@@ -34,11 +34,11 @@ export function useRealtime({ enabled, speak }: UseRealtimeOptions) {
       return;
     }
 
-    const nextClient = new WsClient({
+    const handlers = {
       onStatus: (status: ConnectionStatus) => {
         useConnectionStore.getState().setStatus(status);
       },
-      onFrame: (data) => {
+      onFrame: (data: unknown) => {
         const frame = routeFrame(data);
         if (!frame) {
           return;
@@ -55,7 +55,7 @@ export function useRealtime({ enabled, speak }: UseRealtimeOptions) {
         useAuthStore.getState().clearAuth();
         speakRef.current(SIGN_IN_AGAIN_SPEAK, { priority: "assertive" });
       },
-      onOpen: async ({ reconnect, disconnectedForMs }) => {
+      onOpen: async ({ reconnect, disconnectedForMs }: { reconnect: boolean; disconnectedForMs: number }) => {
         if (!reconnect) {
           return;
         }
@@ -74,16 +74,17 @@ export function useRealtime({ enabled, speak }: UseRealtimeOptions) {
           speakRef.current(RECONNECTED_SPEAK, { priority: "assertive", event: "local" });
         }
       },
-    });
+    };
+
+    const existing = useConnectionStore.getState().client;
+    if (existing) {
+      existing.setHandlers(handlers);
+      return;
+    }
+
+    const nextClient = new WsClient(handlers);
     useConnectionStore.getState().setClient(nextClient);
     void nextClient.connect();
-
-    return () => {
-      nextClient.disconnect();
-      if (useConnectionStore.getState().client === nextClient) {
-        useConnectionStore.getState().setClient(null);
-      }
-    };
   }, [enabled]);
 
   return client;

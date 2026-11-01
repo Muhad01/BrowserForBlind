@@ -17,6 +17,7 @@ export function resetStores() {
   resetDisconnectNarration();
   resetHeartbeatState();
   useAuthStore.setState({ user: null, status: "unknown" });
+  useConnectionStore.getState().client?.disconnect();
   useConnectionStore.setState({ status: "closed", client: null });
   useTaskStore.setState({
     task: null,

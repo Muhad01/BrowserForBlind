@@ -97,6 +97,9 @@ export class WsClient {
   private async openSocket(): Promise<void> {
     try {
       const ticket = await this.fetchTicket();
+      if (this.closedByUser) {
+        return;
+      }
       const separator = this.wsUrl.includes("?") ? "&" : "?";
       const url = `${this.wsUrl}${separator}ticket=${encodeURIComponent(ticket)}`;
       const socket = new this.WebSocketCtor(url);

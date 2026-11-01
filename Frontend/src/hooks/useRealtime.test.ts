@@ -141,6 +141,43 @@ describe("useRealtime", () => {
     );
   });
 
+  it("delivers frames that arrive immediately on open into the task store", async () => {
+    renderHook(() => useRealtime({ enabled: true, speak }));
+    await waitFor(() => expect(MockSocket.instances.length).toBe(1));
+    const socket = MockSocket.instances[0];
+    socket.open();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        event: "task_started",
+        task_id: "t-first",
+        request_id: "r1",
+        payload: { speak: "Starting: search Wikipedia", goal: "Search Wikipedia for AI" },
+      }),
+    } as MessageEvent<string>);
+    expect(useTaskStore.getState().task?.id).toBe("t-first");
+    expect(useTaskStore.getState().events[0]?.event).toBe("task_started");
+    expect(useTaskStore.getState().latestSpeak).toBe("Starting: search Wikipedia");
+  });
+
+  it("keeps the same socket across remounts so early frames are not dropped", async () => {
+    const first = renderHook(() => useRealtime({ enabled: true, speak }));
+    await waitFor(() => expect(MockSocket.instances.length).toBe(1));
+    MockSocket.instances[0].open();
+    first.unmount();
+    const second = renderHook(() => useRealtime({ enabled: true, speak }));
+    expect(MockSocket.instances).toHaveLength(1);
+    MockSocket.instances[0].onmessage?.({
+      data: JSON.stringify({
+        event: "browser_action",
+        task_id: "t-first",
+        request_id: null,
+        payload: { speak: "Opening wikipedia.org", action: "navigate" },
+      }),
+    } as MessageEvent<string>);
+    expect(useTaskStore.getState().events[0]?.event).toBe("browser_action");
+    second.unmount();
+  });
+
   it("clears auth on close code 4401 and does not reconnect", async () => {
     useAuthStore.getState().setUser({ id: "1", username: "demo" });
     renderHook(() => useRealtime({ enabled: true, speak }));
