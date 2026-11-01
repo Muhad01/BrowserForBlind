@@ -615,10 +615,7 @@ class TaskRunner:
             raw = await self.perception.answer(capture, question)
         else:
             raw = await self.perception.describe(capture)
-        if isinstance(raw, PerceptionResult):
-            result = raw
-        else:
-            result = PerceptionResult(text=str(raw))
+        result = raw if isinstance(raw, PerceptionResult) else PerceptionResult(text=str(raw))
         description = result.text
         self._last_perception_answer = description
         await self.publisher.publish(task, "perception_result", {

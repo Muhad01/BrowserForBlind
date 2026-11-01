@@ -4,7 +4,12 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 
 from core.enums import TaskMode, TaskStatus
-from core.services.commands import CommandIntent, classify_command, handle_voice_command, is_information_goal
+from core.services.commands import (
+    CommandIntent,
+    classify_command,
+    handle_voice_command,
+    is_information_goal,
+)
 from core.services.tasks import create_task
 
 User = get_user_model()

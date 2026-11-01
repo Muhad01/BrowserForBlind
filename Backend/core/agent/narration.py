@@ -170,9 +170,7 @@ def is_url_like(text: str, url: str = "") -> bool:
         return True
     if t_lower == "page":
         return True
-    if t_lower.startswith("www."):
-        return True
-    return False
+    return bool(t_lower.startswith("www."))
 
 
 def format_navigate(url: str) -> str:
