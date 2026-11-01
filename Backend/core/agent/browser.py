@@ -40,7 +40,8 @@ _PERCEPTION_DOM_JS = """
   };
   const passwords = Array.from(document.querySelectorAll('input[type="password"]'))
     .map((el) => el.value || '');
-  return {
+    return {
+    html_lang: (document.documentElement.getAttribute('lang') || ''),
     headings,
     landmarks: Object.keys(landmarkFlags).filter((key) => landmarkFlags[key]),
     link_count: document.querySelectorAll('a[href]').length,
@@ -532,6 +533,7 @@ class BrowserUseGateway:
         return PerceptionCapture(
             url=url,
             title=title,
+            html_lang=str(meta.get("html_lang") or ""),
             screenshot_png=screenshot,
             main_text=main_text,
             article_text=article_text,
