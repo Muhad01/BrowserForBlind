@@ -34,6 +34,8 @@ export function resetStores() {
     lastTranscript: "",
     lastInterim: "",
     lastError: null,
+    level: 0,
+    statusWord: "",
   });
   useSpeechStore.setState({
     lastSpoken: "",
