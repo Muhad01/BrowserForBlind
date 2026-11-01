@@ -14,8 +14,8 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 
 from core.enums import TaskMode, TaskStatus
-from core.errors import USER_MESSAGES, ErrorCode
-from core.models import AgentTask
+from core.errors import ErrorCode
+from core.models import AgentTask, BrowserSession
 from core.services.confirmations import respond as respond_confirmation
 from core.services.sessions import get_or_create_session
 from core.services.tasks import create_task, request_cancel
@@ -30,6 +30,22 @@ STOP_PHRASES = {
     "cancel that",
     "cancel task",
     "never mind",
+    "ruk jao",
+    "bas karo",
+    "ruko",
+    "رک جاؤ",
+    "بس کرو",
+}
+
+CLOSE_BROWSER_PHRASES = {
+    "close the browser",
+    "close browser",
+    "close chrome",
+    "close the window",
+    "close everything",
+    "exit the browser",
+    "browser band karo",
+    "براؤزر بند کرو",
 }
 
 LAST_INTENT_TTL = 86_400
@@ -37,6 +53,9 @@ PERCEPTION_OP_TTL = 86_400
 READ_CURSOR_TTL = 86_400
 
 DESCRIBE_PHRASES = {
+    "is page par kya hai",
+    "یہ صفحہ کیا ہے",
+    "یہاں کیا ہے",
     "whats on this page",
     "what is on this page",
     "what s on this page",
@@ -51,6 +70,10 @@ DESCRIBE_PHRASES = {
 }
 
 READ_PHRASES = {
+    "parho",
+    "page parho",
+    "پڑھو",
+    "یہ صفحہ پڑھو",
     "read this page",
     "read this article",
     "read it",
@@ -61,6 +84,9 @@ READ_PHRASES = {
 }
 
 READ_MORE_PHRASES = {
+    "aage parho",
+    "aur parho",
+    "آگے پڑھو",
     "continue",
     "read more",
     "keep reading",
@@ -121,6 +147,8 @@ class CommandIntent(StrEnum):
     READ_MORE = "read_more"
     ANSWER = "answer"
     TASK = "task"
+    CLOSE_BROWSER = "close_browser"
+    STOP = "stop"
 
 
 def last_intent_key(session_id: str) -> str:
@@ -161,6 +189,19 @@ def classify_command(text: str, previous_intent: str | None = None) -> CommandIn
     normalized = normalize_command(text)
     if not normalized:
         return CommandIntent.TASK
+
+    if normalized in CLOSE_BROWSER_PHRASES:
+        return CommandIntent.CLOSE_BROWSER
+
+    if normalized in STOP_PHRASES:
+        return CommandIntent.STOP
+
+    if normalized in {
+        "explain in urdu",
+        "urdu mein batao",
+        "اردو میں بتاؤ",
+    } or "اردو میں بتاؤ" in (text or ""):
+        return CommandIntent.ANSWER
 
     if normalized in DESCRIBE_PHRASES or re.match(r"what(s| is)? on this page\b", normalized):
         return CommandIntent.DESCRIBE
@@ -213,22 +254,60 @@ def is_information_goal(goal: str) -> bool:
     return bool(set(normalized.split()) & INFO_WORDS)
 
 
-def handle_voice_command(user: Any, text: str, request_id: str | None = None) -> dict[str, Any]:
+def _merge_intents(english: str, spoken: str | None, previous: str | None) -> CommandIntent:
+    primary = classify_command(english, previous_intent=previous)
+    if not spoken or spoken.strip() == english.strip():
+        return primary
+    secondary = classify_command(spoken, previous_intent=previous)
+    if secondary == CommandIntent.CLOSE_BROWSER or primary == CommandIntent.CLOSE_BROWSER:
+        return CommandIntent.CLOSE_BROWSER
+    if secondary == CommandIntent.STOP or primary == CommandIntent.STOP:
+        return CommandIntent.STOP
+    if primary == CommandIntent.TASK and secondary != CommandIntent.TASK:
+        return secondary
+    return primary
+
+
+def handle_voice_command(
+    user: Any,
+    text: str,
+    request_id: str | None = None,
+    spoken_text: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
     """Process incoming voice command: route stop phrases or create background AgentTask."""
-    if is_stop_phrase(text):
-        return handle_stop_task(user, task_id=None, request_id=request_id)
+    from core.agent.messages import resolve_reply_language, t
+
+    original = (spoken_text or text or "").strip()
+    task_language = resolve_reply_language(language, language, original)
 
     session = get_or_create_session(user)
+    if session.browser_closed_by_user:
+        session.browser_closed_by_user = False
+        session.save(update_fields=["browser_closed_by_user", "updated_at"])
+
     previous = cache.get(last_intent_key(str(session.id)))
-    intent = classify_command(text, previous_intent=previous)
+    intent = _merge_intents(text, spoken_text, previous)
+    if intent == CommandIntent.STOP or is_stop_phrase(text) or is_stop_phrase(original):
+        return handle_stop_task(user, task_id=None, request_id=request_id, language=task_language)
+    if intent == CommandIntent.CLOSE_BROWSER:
+        return handle_close_browser(user, language=task_language)
+
     cache.set(last_intent_key(str(session.id)), intent.value, LAST_INTENT_TTL)
 
     mode = TaskMode.PERCEPTION if intent != CommandIntent.TASK else TaskMode.TASK
     try:
-        task = create_task(user, goal=text, mode=mode, dispatch=True)
+        task = create_task(
+            user,
+            goal=text,
+            mode=mode,
+            dispatch=True,
+            language=task_language,
+            goal_original=original,
+        )
         if mode == TaskMode.PERCEPTION:
             cache.set(perception_op_key(str(task.id)), intent.value, PERCEPTION_OP_TTL)
-            cache.set(perception_question_key(str(task.id)), text, PERCEPTION_OP_TTL)
+            cache.set(perception_question_key(str(task.id)), original or text, PERCEPTION_OP_TTL)
         return {
             "status": "ok",
             "task_id": str(task.id),
@@ -239,15 +318,86 @@ def handle_voice_command(user: Any, text: str, request_id: str | None = None) ->
         return {
             "status": "error",
             "error_code": ErrorCode.TASK_ALREADY_RUNNING.value,
-            "speak": USER_MESSAGES[ErrorCode.TASK_ALREADY_RUNNING],
+            "speak": t("already_running", task_language),
             "error_message": str(err),
+            "lang": task_language,
         }
+
+
+def handle_close_browser(user: Any, language: str = "en") -> dict[str, Any]:
+    """Cancel any active task and close the hosted Chromium window."""
+    from core.agent.messages import t
+    from core.tasks import close_browser
+
+    session = get_or_create_session(user)
+    active = (
+        AgentTask.objects.filter(
+            user=user,
+            status__in=[TaskStatus.RUNNING, TaskStatus.WAITING_CONFIRMATION, TaskStatus.PENDING],
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if active:
+        request_cancel(user, active.id)
+    session.browser_closed_by_user = True
+    session.save(update_fields=["browser_closed_by_user", "updated_at"])
+    close_browser.delay(str(session.id))
+    return {
+        "status": "browser_closed",
+        "speak": t("browser_closed", language),
+        "lang": language,
+    }
+
+
+def handle_user_closed_browser(session_id: str, during_task: bool) -> None:
+    """Respect a user-closed Chromium window. No tab recovery after this."""
+    from asgiref.sync import async_to_sync
+
+    from core.agent.events import ChannelsEventPublisher
+    from core.agent.messages import t
+
+    session = BrowserSession.objects.filter(pk=session_id).first()
+    if session is None:
+        return
+    session.browser_closed_by_user = True
+    session.save(update_fields=["browser_closed_by_user", "updated_at"])
+    if not during_task:
+        return
+    task = (
+        AgentTask.objects.filter(
+            session=session,
+            status__in=[TaskStatus.RUNNING, TaskStatus.WAITING_CONFIRMATION, TaskStatus.PENDING],
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if not task:
+        return
+    request_cancel(task.user, task.id)
+    lang = getattr(task, "language", "en") or "en"
+    task.error_code = ErrorCode.CANCELLED_BY_USER.value
+    task.error_message = t("user_closed_browser", lang)
+    task.save(update_fields=["error_code", "error_message", "updated_at"])
+    try:
+        async_to_sync(ChannelsEventPublisher().publish)(
+            task,
+            "task_failed",
+            {
+                "speak": t("user_closed_browser", lang),
+                "error_code": ErrorCode.CANCELLED_BY_USER.value,
+                "error_message": t("user_closed_browser", lang),
+            },
+        )
+    except Exception as err:
+        logger.warning("user_closed_event_failed", error=str(err))
 
 
 def handle_stop_task(
     user: Any,
     task_id: uuid.UUID | None = None,
     request_id: str | None = None,
+    language: str = "en",
 ) -> dict[str, Any]:
     """Request cooperative cancellation for active task (FR-41/42)."""
     if task_id:
@@ -267,16 +417,22 @@ def handle_stop_task(
         TaskStatus.WAITING_CONFIRMATION,
         TaskStatus.PENDING,
     }:
+        from core.agent.messages import t
+
         return {
             "status": "no_active_task",
-            "speak": "There's nothing running right now.",
+            "speak": t("nothing_running", language),
+            "lang": language,
         }
 
     request_cancel(user, task.id)
+    from core.agent.messages import t
+
     return {
         "status": "stopping",
         "task_id": str(task.id),
-        "speak": "Stopping.",
+        "speak": t("stopping", language),
+        "lang": language,
     }
 
 

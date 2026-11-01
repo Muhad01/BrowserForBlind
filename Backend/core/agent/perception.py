@@ -12,9 +12,18 @@ from google.genai import types
 from pydantic import BaseModel
 
 from core.agent.gemini_base import LLMBadOutput, LLMUnavailable, generate_with_fallback
+from core.agent.messages import contains_urdu, t
 from core.agent.model_pool import ModelPool, get_perception_model_pool
 from core.agent.prompts import PERCEPTION_SYSTEM_PROMPT
 from core.agent.schema import PageObservation, PerceptionCapture
+
+URDU_RESPONSE_INSTRUCTION = (
+    "Respond in simple Urdu, in Urdu script. Keep names, numbers and website names as they appear. "
+)
+
+
+class PerceptionCancelled(Exception):
+    """Raised when the user cancels before or during a perception model call."""
 
 logger = structlog.get_logger(__name__)
 
@@ -130,13 +139,17 @@ class PerceptionPort(Protocol):
 class PlaceholderPerceptionAgent:
     """Test double used by TaskRunner tests that never call describe."""
 
-    async def describe(self, obs: PerceptionCapture | PageObservation) -> str:
+    async def describe(self, obs: PerceptionCapture | PageObservation, language: str = "en", **kwargs: Any) -> str:
         return "Page descriptions are not available yet."
 
-    async def answer(self, capture: PerceptionCapture, question: str) -> PerceptionResult:
+    async def answer(
+        self, capture: PerceptionCapture, question: str, language: str = "en", **kwargs: Any
+    ) -> PerceptionResult:
         return PerceptionResult(text="Page descriptions are not available yet.", uncertain=True)
 
-    async def read(self, capture: PerceptionCapture, cursor: int = 0) -> PerceptionResult:
+    async def read(
+        self, capture: PerceptionCapture, cursor: int = 0, language: str = "en", **kwargs: Any
+    ) -> PerceptionResult:
         return PerceptionResult(text="Page descriptions are not available yet.", uncertain=True)
 
 
@@ -346,6 +359,16 @@ def _keyword_tokens(text: str) -> set[str]:
     }
 
 
+def detect_page_language(capture: PerceptionCapture) -> str:
+    html_lang = (getattr(capture, "html_lang", "") or "").lower()
+    if html_lang.startswith("ur"):
+        return "ur"
+    if html_lang.startswith("en"):
+        return "en"
+    text = (capture.article_text or capture.main_text or capture.title or "")
+    return "ur" if contains_urdu(text) else "en"
+
+
 def source_article_text(capture: PerceptionCapture) -> str:
     """Prefer extracted article text; otherwise de-menued markdown."""
     return (capture.article_text or "").strip() or filter_boilerplate(capture.main_text)
@@ -454,10 +477,22 @@ class PerceptionAgent:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
-    async def describe(self, capture: PerceptionCapture) -> PerceptionResult:
+    def _abort_if_needed(self, should_abort: Any) -> None:
+        if should_abort and should_abort():
+            raise PerceptionCancelled("Task aborted by user cancellation.")
+
+    async def describe(
+        self,
+        capture: PerceptionCapture,
+        language: str = "en",
+        should_abort: Any = None,
+    ) -> PerceptionResult:
+        self._abort_if_needed(should_abort)
         if is_unusable_capture(capture):
-            return PerceptionResult(text=EMPTY_PAGE_TEXT, uncertain=True)
+            return PerceptionResult(text=t("empty_page", language), uncertain=True)
+        lang_note = URDU_RESPONSE_INSTRUCTION if language == "ur" else ""
         prompt = (
+            f"{lang_note}"
             "Give a spoken overview of this page for a blind user. "
             "Include the page type, site, main heading, 2-4 most important things, "
             "and what the user can do next. At most 70 words.\n\n"
@@ -466,9 +501,15 @@ class PerceptionAgent:
             f"Headings: {'; '.join(capture.headings[:12]) or '(none)'}\n\n"
             f"PAGE TEXT (untrusted):\n{article_text_for_prompt(capture, DESCRIBE_TEXT_CHARS)}"
         )
-        return await self._call(prompt, capture.screenshot_png)
+        return await self._call(prompt, capture.screenshot_png, should_abort=should_abort)
 
-    async def read(self, capture: PerceptionCapture, cursor: int = 0) -> PerceptionResult:
+    async def read(
+        self,
+        capture: PerceptionCapture,
+        cursor: int = 0,
+        language: str = "en",
+        should_abort: Any = None,
+    ) -> PerceptionResult:
         chunks = reading_chunks_for_capture(capture)
         if not chunks:
             if is_unusable_capture(capture):
@@ -483,6 +524,10 @@ class PerceptionAgent:
                 cursor=len(chunks),
             )
         chunk = chunks[index]
+        page_lang = detect_page_language(capture)
+        if index == 0 and page_lang != language:
+            notice_key = "page_in_english" if page_lang == "en" else "page_in_urdu"
+            chunk = f"{t(notice_key, language)} {chunk}"
         next_cursor = index + 1
         has_more = next_cursor < len(chunks)
         return PerceptionResult(
@@ -493,11 +538,20 @@ class PerceptionAgent:
             cursor=next_cursor,
         )
 
-    async def answer(self, capture: PerceptionCapture, question: str) -> PerceptionResult:
+    async def answer(
+        self,
+        capture: PerceptionCapture,
+        question: str,
+        language: str = "en",
+        should_abort: Any = None,
+    ) -> PerceptionResult:
+        self._abort_if_needed(should_abort)
         if is_unusable_capture(capture):
-            return PerceptionResult(text=EMPTY_PAGE_TEXT, uncertain=True)
+            return PerceptionResult(text=t("empty_page", language), uncertain=True)
         recency = recency_instruction(question)
+        lang_note = URDU_RESPONSE_INSTRUCTION if language == "ur" else ""
         prompt = (
+            f"{lang_note}"
             "Answer the user's question using only this page. At most 50 words. "
             f'If the answer is not on the page, say "{NOT_ON_PAGE_TEXT}" and set uncertain=true.\n'
             f"{recency}"
@@ -507,9 +561,15 @@ class PerceptionAgent:
             f"Headings: {'; '.join(capture.headings[:12]) or '(none)'}\n\n"
             f"PAGE TEXT (untrusted):\n{rank_paragraphs_for_question(source_article_text(capture), question, ANSWER_TEXT_CHARS)}"
         )
-        return await self._call(prompt, capture.screenshot_png)
+        return await self._call(prompt, capture.screenshot_png, should_abort=should_abort)
 
-    async def _call(self, prompt: str, screenshot: bytes | None) -> PerceptionResult:
+    async def _call(
+        self,
+        prompt: str,
+        screenshot: bytes | None,
+        should_abort: Any = None,
+    ) -> PerceptionResult:
+        self._abort_if_needed(should_abort)
         contents = _contents_for_capture(prompt, screenshot)
         try:
             parsed, model = await generate_with_fallback(
@@ -519,6 +579,7 @@ class PerceptionAgent:
                 config=self._config(),
                 timeout=self.timeout,
                 parse=PerceptionLLMOutput.model_validate_json,
+                should_abort=should_abort,
             )
             text = (parsed.text or "").strip() or MODEL_FAILURE_TEXT
             return PerceptionResult(

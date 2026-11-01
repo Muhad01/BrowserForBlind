@@ -10,17 +10,19 @@ Rules:
 import re
 from urllib.parse import urlparse
 
+from core.agent.messages import error_message, t
 from core.agent.schema import ElementMeta, NormalizedAction, PageObservation
 from core.enums import ActionType
-from core.errors import USER_MESSAGES, ErrorCode
+from core.errors import ErrorCode
 
 
-def ensure_under_n_words(text: str, limit: int) -> str:
+def ensure_under_n_words(text: str, limit: int, ellipsis: bool = False) -> str:
     """Clamp sentence length to at most `limit` words (NFR-ACC-02)."""
     words = text.strip().split()
     if len(words) <= limit:
         return text.strip()
-    return " ".join(words[:limit])
+    cut = " ".join(words[:limit])
+    return f"{cut}…" if ellipsis else cut
 
 
 def ensure_under_20_words(text: str) -> str:
@@ -173,11 +175,11 @@ def is_url_like(text: str, url: str = "") -> bool:
     return bool(t_lower.startswith("www."))
 
 
-def format_navigate(url: str) -> str:
+def format_navigate(url: str, language: str = "en") -> str:
     """Format navigate action: 'Opening wikipedia.org' (strip www, en., m. prefixes)."""
     cleaned_url = url.strip()
     if cleaned_url.startswith("about:"):
-        return ensure_under_20_words(f"Opening {cleaned_url}")
+        return ensure_under_20_words(t("opening", language, target=cleaned_url))
 
     parsed = urlparse(cleaned_url if "://" in cleaned_url else f"https://{cleaned_url}")
     host = parsed.netloc.lower()
@@ -192,36 +194,36 @@ def format_navigate(url: str) -> str:
         host = host[2:]
 
     display_target = host if host else cleaned_url
-    return ensure_under_20_words(f"Opening {display_target}")
+    return ensure_under_20_words(t("opening", language, target=display_target))
 
 
-def format_click(meta: ElementMeta | None) -> str:
+def format_click(meta: ElementMeta | None, language: str = "en") -> str:
     """Format click action: suggestions, links, buttons, or generic element."""
     if not meta:
-        return "Clicking a button"
+        return t("clicking_generic", language)
 
     role = meta.role.lower() if meta.role else ""
     name = meta.accessible_name.strip() if meta.accessible_name else ""
 
     if role == "suggestion":
         if name:
-            return ensure_under_20_words(f"Choosing the suggestion {name}")
-        return "Choosing the suggestion"
+            return ensure_under_20_words(t("choosing_suggestion", language, name=name))
+        return t("choosing_suggestion_generic", language)
 
     if role == "link":
         if name:
-            return ensure_under_20_words(f"Opening the link {name}")
-        return "Opening a link"
+            return ensure_under_20_words(t("opening_link", language, name=name))
+        return t("opening_a_link", language)
 
     if name:
         if "button" in name.lower():
-            return ensure_under_20_words(f"Clicking the {name}")
-        return ensure_under_20_words(f"Clicking the {name} button")
+            return ensure_under_20_words(t("clicking_named", language, name=name))
+        return ensure_under_20_words(t("clicking_named_button", language, name=name))
 
-    return "Clicking a button"
+    return t("clicking_generic", language)
 
 
-def format_type(meta: ElementMeta | None, value: str) -> str:
+def format_type(meta: ElementMeta | None, value: str, language: str = "en") -> str:
     """Format typing action: 'Typing ... into the search box' or 'Filling in your password'."""
     if meta:
         is_password = (
@@ -229,7 +231,7 @@ def format_type(meta: ElementMeta | None, value: str) -> str:
             or "password" in f"{meta.name} {meta.id} {meta.accessible_name}".lower()
         )
         if is_password:
-            return "Filling in your password"
+            return t("filling_password", language)
 
         name = meta.accessible_name.strip()
         role = meta.role.lower() if meta.role else ""
@@ -241,49 +243,49 @@ def format_type(meta: ElementMeta | None, value: str) -> str:
         else:
             box_label = "the text box"
 
-        return ensure_under_20_words(f"Typing {value} into {box_label}")
+        return ensure_under_20_words(t("typing_into", language, value=value, box=box_label))
 
-    return ensure_under_20_words(f"Typing {value}")
+    return ensure_under_20_words(t("typing", language, value=value))
 
 
-def format_select(meta: ElementMeta | None, value: str) -> str:
+def format_select(meta: ElementMeta | None, value: str, language: str = "en") -> str:
     """Format dropdown selection: 'Choosing Medium from the Size dropdown'."""
     if meta and meta.accessible_name:
         dropdown_label = f"the {meta.accessible_name} dropdown"
     else:
         dropdown_label = "the dropdown"
-    return ensure_under_20_words(f"Choosing {value} from {dropdown_label}")
+    return ensure_under_20_words(t("choosing_select", language, value=value, dropdown=dropdown_label))
 
 
-def format_scroll(direction: str = "down") -> str:
+def format_scroll(direction: str = "down", language: str = "en") -> str:
     """Format scrolling action."""
     dir_clean = "up" if "up" in direction.lower() else "down"
-    return f"Scrolling {dir_clean}"
+    return t("scrolling_up" if dir_clean == "up" else "scrolling_down", language)
 
 
-def format_wait(seconds: float | str | None = None) -> str:
+def format_wait(seconds: float | str | None = None, language: str = "en") -> str:
     """Format waiting action."""
-    return "Waiting a moment"
+    return t("waiting", language)
 
 
-def format_back() -> str:
+def format_back(language: str = "en") -> str:
     """Format back navigation action."""
-    return "Going back"
+    return t("going_back", language)
 
 
-def format_describe() -> str:
+def format_describe(language: str = "en") -> str:
     """Format visual perception action."""
-    return "Looking at the page"
+    return t("looking", language)
 
 
-def format_stop(result: str, title: str = "") -> str:
+def format_stop(result: str, title: str = "", language: str = "en") -> str:
     """Format task completion, optionally naming the final page (up to 30 words)."""
     result_text = (result or "").strip()
     page_title = (title or "").strip()
     if page_title and not is_url_like(page_title):
-        spoken = f"Done. {result_text} You're on {page_title}."
+        spoken = t("done_on_page", language, result=result_text, title=page_title)
     else:
-        spoken = f"Done. {result_text}"
+        spoken = t("done", language, result=result_text)
     return ensure_under_n_words(spoken, 30)
 
 
@@ -297,29 +299,30 @@ def source_host(url: str) -> str:
     return host
 
 
-def with_source_attribution(text: str, url: str) -> str:
+def with_source_attribution(text: str, url: str, language: str = "en") -> str:
     """Append 'Source: host.' in at most six extra words (FR-25)."""
     body = (text or "").strip()
     host = source_host(url)
+    credit = t("source", language, host=host) if host else ""
     if not body:
-        return f"Source: {host}." if host else ""
-    if "source:" in body.lower() or not host:
+        return credit
+    if "source:" in body.lower() or "ماخذ:" in body or not host:
         return body
     trimmed = body.rstrip(" .")
-    return f"{trimmed}. Source: {host}."
+    return f"{trimmed}. {credit}"
 
 
-def format_grounded_stop(result: str) -> str:
+def format_grounded_stop(result: str, language: str = "en") -> str:
     """Speak a page-grounded result without truncating the source host."""
     body = (result or "").strip()
     if not body:
-        return "Done."
-    if body.lower().startswith("done."):
+        return t("done_empty", language)
+    if body.lower().startswith("done.") or body.startswith("ہو گیا"):
         return body
-    return f"Done. {body}"
+    return t("done", language, result=body)
 
 
-def page_changed(new_title: str, url: str = "") -> str:
+def page_changed(new_title: str, url: str = "", language: str = "en") -> str:
     """Format page transition without ever speaking a URL path (NFR-ACC-02)."""
     title = (new_title or "").strip()
     if is_url_like(title):
@@ -335,8 +338,8 @@ def page_changed(new_title: str, url: str = "") -> str:
             elif host.startswith("m."):
                 host = host[2:]
             friendly = host if host else url
-            return ensure_under_20_words(f"Now on: {friendly}")
-        return "Now on new page"
+            return ensure_under_20_words(t("now_on", language, title=friendly))
+        return t("now_on_new", language)
 
     # Clean title
     for sep in [" - ", " | ", " – ", " — "]:
@@ -345,55 +348,56 @@ def page_changed(new_title: str, url: str = "") -> str:
             title = f"{parts[0].strip()}, {parts[1].strip()}"
             break
 
-    return ensure_under_20_words(f"Now on: {title}")
+    return ensure_under_20_words(t("now_on", language, title=title))
 
 
-# format_page_change alias
-format_page_change = page_changed
+def format_page_change(new_title: str, url: str = "", language: str = "en") -> str:
+    return page_changed(new_title, url=url, language=language)
 
 
-def format_task_started(goal: str) -> str:
-    """Format task startup announcement."""
-    return ensure_under_20_words(f"Starting: {goal}")
+def format_task_started(goal: str, language: str = "en") -> str:
+    """Echo the understood command so the user can cancel immediately (FR-19)."""
+    spoken = t("okay", language, goal=(goal or "").strip())
+    return ensure_under_n_words(spoken, 20, ellipsis=True)
 
 
-def format_task_failed(error_code: ErrorCode | str) -> str:
+def format_task_failed(error_code: ErrorCode | str, language: str = "en") -> str:
     """Format task failure announcement."""
-    try:
-        code_enum = ErrorCode(error_code)
-        return ensure_under_20_words(USER_MESSAGES.get(code_enum, "Task execution failed."))
-    except ValueError:
-        return "Task execution failed."
+    return ensure_under_20_words(error_message(error_code, language))
 
 
-def format_task_cancelled() -> str:
+def format_task_cancelled(language: str = "en") -> str:
     """Format cooperative cancellation announcement."""
-    return "Stopped. Nothing else will be done."
+    return t("stopped", language)
 
 
-def format_spoken_action(action: NormalizedAction, obs: PageObservation | None = None) -> str:
+def format_spoken_action(
+    action: NormalizedAction,
+    obs: PageObservation | None = None,
+    language: str = "en",
+) -> str:
     """Main dispatch function translating a normalized action into spoken text."""
     meta = None
     if obs and action.element_index is not None and action.element_index in obs.element_meta:
         meta = obs.element_meta[action.element_index]
 
     if action.action == ActionType.NAVIGATE:
-        return format_navigate(action.target)
+        return format_navigate(action.target, language=language)
     if action.action == ActionType.CLICK:
-        return format_click(meta)
+        return format_click(meta, language=language)
     if action.action == ActionType.TYPE:
-        return format_type(meta, action.value)
+        return format_type(meta, action.value, language=language)
     if action.action == ActionType.SELECT:
-        return format_select(meta, action.value)
+        return format_select(meta, action.value, language=language)
     if action.action == ActionType.SCROLL:
-        return format_scroll(action.scroll_direction or action.target or "down")
+        return format_scroll(action.scroll_direction or action.target or "down", language=language)
     if action.action == ActionType.WAIT:
-        return format_wait(action.value)
+        return format_wait(action.value, language=language)
     if action.action == ActionType.BACK:
-        return format_back()
+        return format_back(language=language)
     if action.action == ActionType.DESCRIBE:
-        return format_describe()
+        return format_describe(language=language)
     if action.action == ActionType.STOP:
-        return format_stop(action.value)
+        return format_stop(action.value, language=language)
 
     return ensure_under_20_words(f"Performing {action.action.value}")

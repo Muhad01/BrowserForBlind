@@ -11,7 +11,10 @@ export type ShortcutAction =
   | "confirm-no"
   | "settings"
   | "toggle-verbosity"
-  | "toggle-talk-mode";
+  | "toggle-talk-mode"
+  | "cycle-language"
+  | "toggle-voice-gender"
+  | "close-browser";
 
 export function isTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -32,7 +35,7 @@ export function shortcutFromKeyboardEvent(event: KeyboardEvent): ShortcutAction 
     return "toggle-listen";
   }
   if (event.key === "Escape") {
-    return "stop";
+    return event.shiftKey ? "close-browser" : "stop";
   }
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
   if (key === "r") {
@@ -55,6 +58,12 @@ export function shortcutFromKeyboardEvent(event: KeyboardEvent): ShortcutAction 
   }
   if (key === "t") {
     return "toggle-talk-mode";
+  }
+  if (key === "l") {
+    return "cycle-language";
+  }
+  if (key === "g") {
+    return "toggle-voice-gender";
   }
   return null;
 }

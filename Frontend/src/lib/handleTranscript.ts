@@ -3,8 +3,13 @@ import type { WsClient } from "@/lib/wsClient";
 import { useSpeechStore } from "@/stores/speechStore";
 import { useVoiceStore } from "@/stores/voiceStore";
 
+export interface VoiceCommandExtra {
+  spoken_text?: string;
+  language?: "en" | "ur" | "mixed";
+}
+
 export interface TranscriptHandlers {
-  sendVoiceCommand: (text: string) => void;
+  sendVoiceCommand: (text: string, extra?: VoiceCommandExtra) => void;
   repeatLast: () => void;
   openHelp: () => void;
 }
@@ -28,8 +33,19 @@ export function handleTranscript(text: string, handlers: TranscriptHandlers): "e
   return kind;
 }
 
-export function sendVoiceCommand(client: WsClient | null, text: string): void {
-  const envelope = client?.send("voice_command", { text });
+export function sendVoiceCommand(
+  client: WsClient | null,
+  text: string,
+  extra?: VoiceCommandExtra,
+): void {
+  const payload: Record<string, unknown> = { text };
+  if (extra?.spoken_text) {
+    payload.spoken_text = extra.spoken_text.slice(0, 500);
+  }
+  if (extra?.language) {
+    payload.language = extra.language;
+  }
+  const envelope = client?.send("voice_command", payload);
   if (envelope) {
     useVoiceStore.getState().beginProcessing(envelope.request_id);
   }

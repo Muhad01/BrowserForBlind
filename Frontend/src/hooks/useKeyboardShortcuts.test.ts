@@ -28,6 +28,12 @@ describe("keyboard shortcuts", () => {
     expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "s" }))).toBe("settings");
     expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "v" }))).toBe("toggle-verbosity");
     expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "t" }))).toBe("toggle-talk-mode");
+    expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "l" }))).toBe("cycle-language");
+    expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "g" }))).toBe("toggle-voice-gender");
+    expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "Escape" }))).toBe("stop");
+    expect(shortcutFromKeyboardEvent(new KeyboardEvent("keydown", { key: "Escape", shiftKey: true }))).toBe(
+      "close-browser",
+    );
   });
 
   it("hold mode starts on keydown, ignores repeat, and stops on keyup without abort semantics", () => {
@@ -50,6 +56,24 @@ describe("keyboard shortcuts", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", repeat: true, bubbles: true }));
     expect(onAction).toHaveBeenCalledTimes(1);
     expect(onAction).toHaveBeenCalledWith("toggle-listen");
+  });
+
+  it("Shift+Escape closes the browser and Escape only stops", () => {
+    const onAction = vi.fn();
+    renderHook(() => useKeyboardShortcuts(true, onAction));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", shiftKey: true, bubbles: true }));
+    expect(onAction).toHaveBeenCalledWith("close-browser");
+    onAction.mockReset();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(onAction).toHaveBeenCalledWith("stop");
+    expect(onAction).not.toHaveBeenCalledWith("close-browser");
+  });
+
+  it("L cycles through the language shortcut", () => {
+    const onAction = vi.fn();
+    renderHook(() => useKeyboardShortcuts(true, onAction));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "l", bubbles: true }));
+    expect(onAction).toHaveBeenCalledWith("cycle-language");
   });
 
   it("does not fire while focus is in a text field", () => {

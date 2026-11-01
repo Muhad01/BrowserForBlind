@@ -210,6 +210,9 @@ class BrowserHost:
     ) -> AcquireResult:
         sid = str(session_id)
         last_url = (last_url or "").strip()
+        session_row = await BrowserSession.objects.filter(pk=sid).afirst()
+        if session_row and session_row.browser_closed_by_user:
+            await self.close_async(sid)
         entry = self._entries.get(sid)
         if entry is not None:
             if await self._is_healthy(entry.gateway):
@@ -219,6 +222,7 @@ class BrowserHost:
                     restored = await self._navigate_last_url(entry.gateway, last_url, sid)
                     if restored:
                         entry.last_used = self.clock()
+                        self._bind_user_closed(entry.gateway, sid)
                         return AcquireResult(
                             gateway=entry.gateway,
                             started_fresh=False,
@@ -229,6 +233,7 @@ class BrowserHost:
                     await self.close_async(sid)
                 else:
                     entry.last_used = self.clock()
+                    self._bind_user_closed(entry.gateway, sid)
                     return AcquireResult(
                         gateway=entry.gateway,
                         started_fresh=False,
@@ -253,6 +258,7 @@ class BrowserHost:
         )
         with self._lock:
             self._entries[sid] = hosted
+        self._bind_user_closed(gateway, sid)
         return AcquireResult(
             gateway=gateway,
             started_fresh=True,
@@ -301,7 +307,31 @@ class BrowserHost:
         except asyncio.CancelledError:
             return
 
+    def _bind_user_closed(self, gateway: BrowserGateway, session_id: str) -> None:
+        def on_closed() -> None:
+            from core.enums import TaskStatus
+            from core.models import AgentTask
+            from core.services.commands import handle_user_closed_browser
+
+            during = AgentTask.objects.filter(
+                session_id=session_id,
+                status__in=[
+                    TaskStatus.RUNNING,
+                    TaskStatus.WAITING_CONFIRMATION,
+                    TaskStatus.PENDING,
+                ],
+            ).exists()
+            handle_user_closed_browser(session_id, during)
+            try:
+                self.close(session_id)
+            except Exception as err:
+                logger.warning("user_closed_host_close_failed", error=str(err))
+
+        gateway.on_user_closed = on_closed
+
     async def _ensure_page_tab(self, gateway: BrowserGateway, last_url: str) -> None:
+        if getattr(gateway, "closed_by_user", False):
+            return
         ensure = getattr(gateway, "ensure_page_tab", None)
         if ensure is None:
             return

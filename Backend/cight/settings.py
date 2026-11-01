@@ -31,6 +31,9 @@ env = environ.Env(
     GEMINI_API_KEY=(str, ""),
     GEMINI_TASK_MODELS=(str, "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.8-flash,gemini-3.6-flash"),
     GEMINI_PERCEPTION_MODELS=(str, "gemini-3.6-flash,gemini-3.8-flash,gemini-3.5-flash-lite"),
+    GEMINI_TRANSCRIBE_MODELS=(str, "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.8-flash"),
+    TRANSCRIBE_ATTEMPT_TIMEOUT_SECONDS=(int, 8),
+    MAX_AUDIO_SECONDS=(int, 20),
     STALE_TASK_SECONDS=(int, 300),
     LOOP_REPEAT_LIMIT=(int, 3),
     CONSECUTIVE_FAILURE_LIMIT=(int, 3),
@@ -175,6 +178,10 @@ else:
 
 _raw_perception = env("GEMINI_PERCEPTION_MODELS")
 GEMINI_PERCEPTION_MODELS = [m.strip() for m in _raw_perception.split(",") if m.strip()]
+_raw_transcribe = env("GEMINI_TRANSCRIBE_MODELS")
+GEMINI_TRANSCRIBE_MODELS = [m.strip() for m in _raw_transcribe.split(",") if m.strip()]
+TRANSCRIBE_ATTEMPT_TIMEOUT_SECONDS = env("TRANSCRIBE_ATTEMPT_TIMEOUT_SECONDS")
+MAX_AUDIO_SECONDS = env("MAX_AUDIO_SECONDS")
 
 # Maintain GEMINI_MODEL alias pointing to primary task model
 GEMINI_MODEL = GEMINI_TASK_MODELS[0] if GEMINI_TASK_MODELS else "gemini-3.5-flash-lite"

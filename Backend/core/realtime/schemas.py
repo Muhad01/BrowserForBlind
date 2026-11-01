@@ -10,6 +10,8 @@ class VoiceCommandPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=500)
+    spoken_text: str | None = Field(default=None, max_length=500)
+    language: Literal["en", "ur", "mixed"] | None = None
 
     @field_validator("text")
     @classmethod
@@ -17,6 +19,18 @@ class VoiceCommandPayload(BaseModel):
         s = v.strip()
         if not s or len(s) > 500:
             raise ValueError("text must be between 1 and 500 characters after stripping.")
+        return s
+
+    @field_validator("spoken_text")
+    @classmethod
+    def validate_spoken(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        s = v.strip()
+        if not s:
+            return None
+        if len(s) > 500:
+            raise ValueError("spoken_text must be at most 500 characters.")
         return s
 
 

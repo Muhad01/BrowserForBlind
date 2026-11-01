@@ -83,6 +83,7 @@ class PerceptionCapture(BaseModel):
 
     url: str = ""
     title: str = ""
+    html_lang: str = ""
     screenshot_png: bytes | None = None
     main_text: str = ""
     article_text: str = ""

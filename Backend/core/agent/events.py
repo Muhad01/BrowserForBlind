@@ -5,7 +5,13 @@ from typing import Any, Protocol
 import structlog
 from channels.layers import get_channel_layer
 
+from core.agent.messages import normalize_lang
 from core.models import AgentTask
+
+
+def payload_with_lang(task: AgentTask, payload: dict[str, Any]) -> dict[str, Any]:
+    lang = normalize_lang(getattr(task, "language", "en"))
+    return {**payload, "lang": lang}
 
 logger = structlog.get_logger(__name__)
 
@@ -50,7 +56,7 @@ class ChannelsEventPublisher:
             "type": "task.event",
             "event": event,
             "task_id": str(task.id),
-            "payload": payload,
+            "payload": payload_with_lang(task, payload),
         }
         try:
             await channel_layer.group_send(group_name, message)
@@ -69,7 +75,7 @@ class RecordingPublisher:
         self.events.append({
             "task_id": str(task.id),
             "event": event,
-            "payload": payload,
+            "payload": payload_with_lang(task, payload),
         })
 
 

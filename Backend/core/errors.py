@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     TASK_ALREADY_RUNNING = "task_already_running"
     INVALID_REQUEST = "invalid_request"
     INTERNAL_ERROR = "internal_error"
+    TRANSCRIPTION_UNAVAILABLE = "transcription_unavailable"
 
 
 USER_MESSAGES: dict[ErrorCode, str] = {
@@ -53,5 +54,6 @@ USER_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.TASK_ALREADY_RUNNING: "I'm still working on your last request. Say stop to cancel it.",
     ErrorCode.INVALID_REQUEST: "The request payload was invalid.",
     ErrorCode.INTERNAL_ERROR: "An internal error occurred while executing your task. Please try again.",
+    ErrorCode.TRANSCRIPTION_UNAVAILABLE: "I couldn't process that. Please say it again.",
 }
 

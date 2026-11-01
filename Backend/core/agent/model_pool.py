@@ -100,6 +100,7 @@ class ModelPool:
 # Module-level shared pools per chain
 _TASK_POOL: ModelPool | None = None
 _PERCEPTION_POOL: ModelPool | None = None
+_TRANSCRIBE_POOL: ModelPool | None = None
 
 
 def get_task_model_pool() -> ModelPool:
@@ -130,9 +131,24 @@ def get_perception_model_pool() -> ModelPool:
     return _PERCEPTION_POOL
 
 
+def get_transcribe_model_pool() -> ModelPool:
+    """Get the shared transcription model pool instance."""
+    global _TRANSCRIBE_POOL
+    if _TRANSCRIBE_POOL is None:
+        from django.conf import settings
+        models = getattr(
+            settings,
+            "GEMINI_TRANSCRIBE_MODELS",
+            ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash"],
+        )
+        _TRANSCRIBE_POOL = ModelPool(models)
+    return _TRANSCRIBE_POOL
+
+
 def reset_model_pools() -> None:
     """Reset shared model pools (primarily for testing)."""
-    global _TASK_POOL, _PERCEPTION_POOL
+    global _TASK_POOL, _PERCEPTION_POOL, _TRANSCRIBE_POOL
     _TASK_POOL = None
     _PERCEPTION_POOL = None
+    _TRANSCRIBE_POOL = None
 

@@ -10,6 +10,7 @@ from django.utils import timezone
 from core.agent.browser import BrowserGateway
 from core.agent.events import EventPublisher
 from core.agent.llm import HistoryItem, LLMBadOutput, LLMClient, LLMUnavailable, Proposal
+from core.agent.messages import t
 from core.agent.narration import (
     format_grounded_stop,
     format_page_change,
@@ -51,6 +52,7 @@ class TaskRunner:
         self.perception = perception
         self.publisher = publisher
         self.reopened_page = reopened_page
+        self.lang = "en"
         self._last_perception_answer = ""
         self._last_capture_url = ""
         self._last_capture_title = ""
@@ -66,12 +68,14 @@ class TaskRunner:
         # Server-side resolved profile path (FR-53)
         profile_dir = task.session.profile.path if task.session.profile else settings.BROWSER_PROFILE_ROOT / str(task.user_id) / "default"
 
-        # FR-19, FR-59: Announce task start
-        start_speak = format_task_started(task.goal)
+        # FR-19, FR-59: Echo the understood command so the user can cancel immediately
+        self.lang = getattr(task, "language", "en") or "en"
+        echoed = (task.goal_original or task.goal or "").strip()
+        start_speak = format_task_started(echoed, language=self.lang)
         await self.publisher.publish(
             task,
             "task_started",
-            {"speak": start_speak, "brief": "Working on it.", "goal": task.goal},
+            {"speak": start_speak, "brief": start_speak, "goal": echoed},
         )
 
         max_steps = getattr(settings, "TASK_MAX_STEPS", 50)
@@ -98,7 +102,7 @@ class TaskRunner:
                     task,
                     "agent_status",
                     {
-                        "speak": "I reopened your last page.",
+                        "speak": t("reopened", self.lang),
                         "step": step_count,
                         "url": session.last_url or "",
                         "title": "",
@@ -114,7 +118,7 @@ class TaskRunner:
                     task.error_code = ErrorCode.CANCELLED_BY_USER.value
                     task.error_message = USER_MESSAGES[ErrorCode.CANCELLED_BY_USER]
                     await task.asave(update_fields=["error_code", "error_message", "updated_at"])
-                    cancel_speak = format_task_cancelled()
+                    cancel_speak = format_task_cancelled(language=self.lang)
                     await self.publisher.publish(
                         task,
                         "task_failed",
@@ -142,7 +146,7 @@ class TaskRunner:
 
                 # Publish agent_status ONLY when page title changed (FR-20, Part C.3)
                 if last_title is not None and obs.title != last_title and obs.title.strip():
-                    page_speak = format_page_change(obs.title, url=obs.url)
+                    page_speak = format_page_change(obs.title, url=obs.url, language=self.lang)
                     await self.publisher.publish(
                         task,
                         "agent_status",
@@ -359,7 +363,7 @@ class TaskRunner:
                     await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
                     # FR-12, FR-22, FR-64. Preceding perception_result speak is cleared when stop repeats it.
                     await self.publisher.publish(task, "task_completed", {
-                        "speak": format_stop(normalized.value, final_title),
+                        "speak": format_stop(normalized.value, final_title, language=self.lang),
                         "result": normalized.value,
                         "final_url": final_url,
                         "final_title": final_title,
@@ -390,7 +394,7 @@ class TaskRunner:
                     task.error_code = ErrorCode.CANCELLED_BY_USER.value
                     task.error_message = USER_MESSAGES[ErrorCode.CANCELLED_BY_USER]
                     await task.asave(update_fields=["error_code", "error_message", "updated_at"])
-                    cancel_speak = format_task_cancelled()
+                    cancel_speak = format_task_cancelled(language=self.lang)
                     await self.publisher.publish(
                         task,
                         "task_failed",
@@ -418,7 +422,7 @@ class TaskRunner:
 
                 else:
                     # Executing physical browser interaction
-                    spoken_msg = format_spoken_action(normalized, obs)
+                    spoken_msg = format_spoken_action(normalized, obs, language=self.lang)
                     await self.publisher.publish(task, "browser_action", {
                         "speak": spoken_msg,
                         "action": normalized.action.value,
@@ -602,6 +606,7 @@ class TaskRunner:
         spoken_msg = format_spoken_action(
             NormalizedAction(action=ActionType.DESCRIBE, value=question, reason=reason),
             obs,
+            language=self.lang,
         )
         await self.publisher.publish(task, "browser_action", {
             "speak": spoken_msg,
@@ -612,9 +617,15 @@ class TaskRunner:
         self._last_capture_url = capture.url
         self._last_capture_title = capture.title
         if question and hasattr(self.perception, "answer"):
-            raw = await self.perception.answer(capture, question)
+            try:
+                raw = await self.perception.answer(capture, question, language=self.lang)
+            except TypeError:
+                raw = await self.perception.answer(capture, question)
         else:
-            raw = await self.perception.describe(capture)
+            try:
+                raw = await self.perception.describe(capture, language=self.lang)
+            except TypeError:
+                raw = await self.perception.describe(capture)
         result = raw if isinstance(raw, PerceptionResult) else PerceptionResult(text=str(raw))
         description = result.text
         self._last_perception_answer = description
@@ -667,7 +678,7 @@ class TaskRunner:
         )
 
     async def _complete_grounded(self, task: AgentTask, answer: str, url: str, title: str) -> None:
-        grounded = with_source_attribution(answer, url)
+        grounded = with_source_attribution(answer, url, language=self.lang)
         self._silence_last_perception_event()
         await task.arefresh_from_db()
         if task.status in {
@@ -681,7 +692,7 @@ class TaskRunner:
         await task.asave(update_fields=["result_text", "final_url", "updated_at"])
         await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
         await self.publisher.publish(task, "task_completed", {
-            "speak": format_grounded_stop(grounded),
+            "speak": format_grounded_stop(grounded, language=self.lang),
             "result": grounded,
             "final_url": url or "",
             "final_title": title or "",

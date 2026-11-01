@@ -3,22 +3,33 @@ import { create } from "zustand";
 export type OutputMode = "voice" | "screenreader";
 export type Verbosity = "brief" | "detailed";
 export type TalkMode = "press" | "hold";
+export type LanguageSetting = "auto" | "en" | "ur";
+export type SttEngine = "gemini" | "browser";
+export type VoiceGender = "female" | "male";
 
 export interface SpeechSettings {
   rate: number;
   voiceURI: string;
+  voiceURIByLang: { en: string; ur: string };
+  voiceGender: VoiceGender;
   outputMode: OutputMode;
   verbosity: Verbosity;
   talkMode: TalkMode;
+  language: LanguageSetting;
+  sttEngine: SttEngine;
 }
 
 const STORAGE_KEY = "cight-speech-settings";
 const DEFAULT_SETTINGS: SpeechSettings = {
   rate: 1.1,
   voiceURI: "",
+  voiceURIByLang: { en: "", ur: "" },
+  voiceGender: "female",
   outputMode: "voice",
   verbosity: "brief",
   talkMode: "press",
+  language: "auto",
+  sttEngine: "gemini",
 };
 
 function clampRate(rate: number): number {
@@ -38,9 +49,16 @@ export function loadSpeechSettings(): SpeechSettings {
     return {
       rate: clampRate(typeof parsed.rate === "number" ? parsed.rate : DEFAULT_SETTINGS.rate),
       voiceURI: typeof parsed.voiceURI === "string" ? parsed.voiceURI : "",
+      voiceURIByLang: {
+        en: typeof parsed.voiceURIByLang?.en === "string" ? parsed.voiceURIByLang.en : "",
+        ur: typeof parsed.voiceURIByLang?.ur === "string" ? parsed.voiceURIByLang.ur : "",
+      },
+      voiceGender: parsed.voiceGender === "male" ? "male" : "female",
       outputMode: parsed.outputMode === "screenreader" ? "screenreader" : "voice",
       verbosity: parsed.verbosity === "detailed" ? "detailed" : "brief",
       talkMode: parsed.talkMode === "hold" ? "hold" : "press",
+      language: parsed.language === "ur" || parsed.language === "en" ? parsed.language : "auto",
+      sttEngine: parsed.sttEngine === "browser" ? "browser" : "gemini",
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

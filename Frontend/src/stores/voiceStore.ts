@@ -14,6 +14,9 @@ interface VoiceState {
   lastError: string | null;
   level: number;
   statusWord: string;
+  spokenText: string;
+  lastLanguage: "en" | "ur" | "mixed";
+  forceBrowserOnce: boolean;
   setSupported: (supported: boolean) => void;
   setListening: (listening: boolean) => void;
   setTranscript: (transcript: string) => void;
@@ -21,6 +24,8 @@ interface VoiceState {
   setError: (error: string | null) => void;
   setLevel: (level: number) => void;
   setStatusWord: (statusWord: string) => void;
+  setSpokenText: (spokenText: string, language?: "en" | "ur" | "mixed") => void;
+  setForceBrowserOnce: (force: boolean) => void;
   beginProcessing: (requestId: string) => void;
   endProcessing: (requestId?: string | null) => void;
 }
@@ -35,6 +40,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   lastError: null,
   level: 0,
   statusWord: "",
+  spokenText: "",
+  lastLanguage: "en",
+  forceBrowserOnce: false,
   setSupported: (supported) => set({ supported }),
   setListening: (listening) => set({ listening }),
   setTranscript: (transcript) => set({ lastTranscript: transcript, lastInterim: "" }),
@@ -42,6 +50,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setError: (error) => set({ lastError: error }),
   setLevel: (level) => set({ level }),
   setStatusWord: (statusWord) => set({ statusWord }),
+  setSpokenText: (spokenText, language) =>
+    set({ spokenText, lastLanguage: language ?? get().lastLanguage }),
+  setForceBrowserOnce: (forceBrowserOnce) => set({ forceBrowserOnce }),
   beginProcessing: (requestId) => {
     if (processingTimer) {
       clearTimeout(processingTimer);

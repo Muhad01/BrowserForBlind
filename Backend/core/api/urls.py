@@ -12,4 +12,5 @@ urlpatterns = [
     path("tasks/current/", views.current_task_view, name="api-tasks-current"),
     path("tasks/<uuid:task_id>/", views.task_detail_view, name="api-task-detail"),
     path("session/close/", views.session_close_view, name="api-session-close"),
+    path("voice/transcribe/", views.transcribe_view, name="api-voice-transcribe"),
 ]

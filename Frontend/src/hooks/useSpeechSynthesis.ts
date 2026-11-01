@@ -11,10 +11,15 @@ import {
   noteNonHeartbeatSpeech,
 } from "@/lib/speechGate";
 import { STILL_WORKING } from "@/lib/phrases";
+import { msg } from "@/lib/i18n";
+import { pickVoice } from "@/lib/voiceSelect";
 import { SpeechQueue, type SpeechItem, type SpeechPriority } from "@/lib/speechQueue";
 import { loadSpeechSettings, useSpeechStore } from "@/stores/speechStore";
 import { useTaskStore } from "@/stores/taskStore";
 import { useVoiceStore } from "@/stores/voiceStore";
+
+let warnedMissingUrdu = false;
+let warnedMissingGender = false;
 
 function canUseSynthesis(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
@@ -93,9 +98,21 @@ export function useSpeechSynthesis() {
       const utterance = new SpeechSynthesisUtterance(item.text);
       utterance.rate = settings.rate;
       const voices = window.speechSynthesis.getVoices();
-      const selected = voices.find((voice) => voice.voiceURI === settings.voiceURI);
-      if (selected) {
-        utterance.voice = selected;
+      const lang = (item as SpeechItem & { lang?: string }).lang === "ur" ? "ur" : "en";
+      const preferred = settings.voiceURI || settings.voiceURIByLang[lang];
+      const picked = pickVoice(voices, lang, settings.voiceGender, preferred);
+      if (picked.missingLanguage && lang === "ur" && !warnedMissingUrdu) {
+        warnedMissingUrdu = true;
+        utterance.text = `${msg("urduVoiceMissing", "en")} ${item.text}`;
+        utterance.lang = "en-IN";
+      } else if (picked.voice) {
+        utterance.voice = picked.voice as SpeechSynthesisVoice;
+        utterance.lang = picked.voice.lang;
+      }
+      if (picked.missingGender && !picked.missingLanguage && !warnedMissingGender) {
+        warnedMissingGender = true;
+        const notice = msg(settings.voiceGender === "male" ? "maleMissing" : "femaleMissing", lang);
+        utterance.text = `${notice} ${utterance.text}`;
       }
       utterance.onend = () => {
         if (isSpeechGated()) {
@@ -164,7 +181,7 @@ export function useSpeechSynthesis() {
     };
   }, [flushHeld]);
 
-  const speak = useCallback((text: string, options: { priority?: SpeechPriority; event?: string; liveText?: string } = {}) => {
+  const speak = useCallback((text: string, options: { priority?: SpeechPriority; event?: string; liveText?: string; lang?: string } = {}) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -172,10 +189,11 @@ export function useSpeechSynthesis() {
     if (trimmed !== STILL_WORKING) {
       noteNonHeartbeatSpeech();
     }
-    const item: SpeechItem = {
+    const item: SpeechItem & { lang?: string } = {
       text: trimmed,
       event: options.event ?? "local",
       priority: options.priority ?? "polite",
+      lang: options.lang,
     };
     announce(item, options.liveText);
     if (useSpeechStore.getState().settings.verbosity === "brief" && item.event === "browser_action") {

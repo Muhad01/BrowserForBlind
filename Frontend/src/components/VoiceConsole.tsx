@@ -11,13 +11,12 @@ import styles from "@/components/console.module.css";
 import { logout } from "@/lib/api";
 import { sendConfirmation, sendStopTask, sendVoiceCommand } from "@/lib/handleTranscript";
 import { classifyTranscript } from "@/lib/phrases";
+import { msg, type UiLanguage } from "@/lib/i18n";
 import {
   BRIEF_MODE_SPEAK,
   DETAILED_MODE_SPEAK,
-  HELP_SPEAK,
   HOLD_MODE_SPEAK,
   PRESS_MODE_SPEAK,
-  VOICE_UNSUPPORTED_SPEAK,
 } from "@/lib/phrases";
 import type { ShortcutAction } from "@/lib/shortcuts";
 import type { WsClient } from "@/lib/wsClient";
@@ -35,41 +34,50 @@ interface VoiceConsoleProps {
   onSpeakHelp: () => void;
 }
 
-function connectionLabel(status: string): string {
+function uiLang(): UiLanguage {
+  return useSpeechStore.getState().settings.language === "ur" ? "ur" : "en";
+}
+
+function connectionLabel(status: string, lang: UiLanguage): string {
   if (status === "open") {
-    return "Connected";
+    return msg("connected", lang);
   }
   if (status === "connecting") {
-    return "Connecting";
+    return msg("connecting", lang);
   }
   if (status === "reconnecting") {
-    return "Reconnecting";
+    return msg("reconnecting", lang);
   }
-  return "Disconnected";
+  return msg("disconnected", lang);
 }
 
 function mainStateWord(options: {
   listening: boolean;
   confirmation: boolean;
   taskStatus: string | undefined;
+  statusWord: string;
+  lang: UiLanguage;
 }): string {
+  if (options.statusWord) {
+    return options.statusWord;
+  }
   if (options.confirmation) {
-    return "Waiting for your answer";
+    return msg("waitingAnswer", options.lang);
   }
   if (options.listening) {
-    return "Listening";
+    return msg("listening", options.lang);
   }
   const status = options.taskStatus;
   if (status === "running" || status === "pending" || status === "waiting_confirmation") {
-    return "Working";
+    return msg("working", options.lang);
   }
   if (status === "completed") {
-    return "Done";
+    return msg("done", options.lang);
   }
   if (status === "failed" || status === "cancelled") {
-    return "Problem";
+    return msg("problem", options.lang);
   }
-  return "Ready";
+  return msg("ready", options.lang);
 }
 
 export function VoiceConsole({
@@ -89,12 +97,22 @@ export function VoiceConsole({
   const lastInterim = useVoiceStore((state) => state.lastInterim);
   const lastError = useVoiceStore((state) => state.lastError);
   const supported = useVoiceStore((state) => state.supported);
+  const spokenText = useVoiceStore((state) => state.spokenText);
+  const lastLanguage = useVoiceStore((state) => state.lastLanguage);
+  const level = useVoiceStore((state) => state.level);
+  const statusWord = useVoiceStore((state) => state.statusWord);
+  const languageSetting = useSpeechStore((state) => state.settings.language);
   const [typed, setTyped] = useState("");
+  const lang: UiLanguage = languageSetting === "ur" ? "ur" : "en";
+  const youSaid = spokenText || lastTranscript || lastInterim;
+  const youSaidRtl = lastLanguage === "ur" || lastLanguage === "mixed";
 
   const stateWord = mainStateWord({
     listening,
     confirmation: Boolean(confirmation),
     taskStatus: task?.status,
+    statusWord,
+    lang,
   });
 
   const submitTyped = useCallback(
@@ -148,10 +166,14 @@ export function VoiceConsole({
       <header className={styles.header}>
         <h1 className={styles.brand}>CIGHT Browser</h1>
         <div className={styles.meta}>
-          <p className={styles.statusText}>Connection: {connectionLabel(connection)}</p>
-          <p>Signed in as {user?.username ?? "unknown"}</p>
+          <p className={styles.statusText}>
+            {msg("connection", lang)}: {connectionLabel(connection, lang)}
+          </p>
+          <p>
+            {msg("signedInAs", lang)} {user?.username ?? "unknown"}
+          </p>
           <button className={styles.secondary} type="button" onClick={() => void onSignOut()}>
-            Sign out
+            {msg("signOut", lang)}
           </button>
         </div>
       </header>
@@ -160,23 +182,37 @@ export function VoiceConsole({
         <h2 id="main-status-heading" className={styles.stateWord}>
           {stateWord}
         </h2>
-        <p className={styles.latestSpeak}>{latestSpeak || "No spoken update yet."}</p>
-        <p className={styles.youSaid}>You said: {lastTranscript || lastInterim || "nothing yet"}</p>
+        <p className={styles.latestSpeak}>{latestSpeak || msg("noSpoken", lang)}</p>
+        <p className={styles.youSaid} dir={youSaidRtl ? "rtl" : "ltr"}>
+          {msg("youSaid", lang)}: {youSaid || msg("nothingYet", lang)}
+        </p>
+        {listening ? (
+          <div
+            className={styles.levelMeter}
+            role="meter"
+            aria-label={msg("listening", lang)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(level * 100)}
+          >
+            <span className={styles.levelFill} style={{ width: `${Math.round(level * 100)}%` }} />
+          </div>
+        ) : null}
         {lastError ? <p className={styles.formError}>{lastError}</p> : null}
-        {!supported ? <p>{VOICE_UNSUPPORTED_SPEAK}</p> : null}
+        {!supported ? <p>{msg("voiceUnsupported", lang)}</p> : null}
 
         <div className={styles.actions}>
           <button className={styles.primary} type="button" onClick={onToggleListen}>
-            {listening ? "Stop listening (Space)" : "Speak (Space)"}
+            {listening ? msg("stopListening", lang) : msg("speak", lang)}
           </button>
           <button className={styles.danger} type="button" onClick={stopTask}>
-            Stop (Escape)
+            {msg("stopEscape", lang)}
           </button>
         </div>
 
         <div className={styles.shortcutRow}>
           <button className={styles.secondary} type="button" onClick={onRepeat}>
-            Repeat last message (R)
+            {msg("repeat", lang)}
           </button>
           <button
             className={styles.secondary}
@@ -186,24 +222,24 @@ export function VoiceConsole({
               onSpeakHelp();
             }}
           >
-            Help (H)
+            {msg("help", lang)}
           </button>
           <button
             className={styles.secondary}
             type="button"
             onClick={() => useSpeechStore.getState().setSettingsOpen(true)}
           >
-            Settings (S)
+            {msg("settings", lang)}
           </button>
         </div>
 
         {confirmation ? <ConfirmationPrompt confirmation={confirmation} onRespond={respond} /> : null}
 
         <details open={!supported}>
-          <summary>Type a command instead</summary>
+          <summary>{msg("typeInstead", lang)}</summary>
           <form onSubmit={submitTyped}>
             <div className={styles.field}>
-              <label htmlFor="typed-command">Command</label>
+              <label htmlFor="typed-command">{msg("command", lang)}</label>
               <input
                 id="typed-command"
                 className={styles.input}
@@ -213,7 +249,7 @@ export function VoiceConsole({
               />
             </div>
             <button className={styles.secondary} type="submit">
-              Send command
+              {msg("sendCommand", lang)}
             </button>
           </form>
         </details>
@@ -242,7 +278,7 @@ export function interruptSession(
 
 export function useConsoleActions(options: {
   client: WsClient | null;
-  speak: (text: string, options?: { priority?: "polite" | "assertive"; event?: string }) => void;
+  speak: (text: string, options?: { priority?: "polite" | "assertive"; event?: string; lang?: string }) => void;
   cancelSpeech: () => void;
   closeMic: () => void;
   startListening: () => void;
@@ -276,8 +312,30 @@ export function useConsoleActions(options: {
           return;
         }
         if (action === "help") {
+          const lang = uiLang();
           useSpeechStore.getState().setHelpOpen(true);
-          speak(HELP_SPEAK, { priority: "assertive", event: "local" });
+          speak(msg("helpSpeak", lang), { priority: "assertive", event: "local", lang });
+          return;
+        }
+        if (action === "close-browser") {
+          sendVoiceCommand(client, "close the browser");
+          return;
+        }
+        if (action === "cycle-language") {
+          const current = useSpeechStore.getState().settings.language;
+          const next = current === "auto" ? "en" : current === "en" ? "ur" : "auto";
+          useSpeechStore.getState().setSettings({ language: next });
+          const spokenLang = next === "ur" ? "ur" : "en";
+          const key = next === "auto" ? "languageAuto" : next === "en" ? "languageEn" : "languageUr";
+          speak(msg(key, next === "ur" ? "ur" : "en"), { priority: "assertive", event: "local", lang: spokenLang });
+          return;
+        }
+        if (action === "toggle-voice-gender") {
+          const current = useSpeechStore.getState().settings.voiceGender;
+          const next = current === "female" ? "male" : "female";
+          useSpeechStore.getState().setSettings({ voiceGender: next });
+          const lang = uiLang();
+          speak(msg("voiceNow", lang), { priority: "assertive", event: "local", lang });
           return;
         }
         if (action === "settings") {

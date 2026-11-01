@@ -6,6 +6,7 @@ import { playErrorEarcon, playListenStart, playListenStop } from "@/lib/earcons"
 import { handleTranscript, type TranscriptHandlers } from "@/lib/handleTranscript";
 import { EARCON_MS, LISTEN_TIMEOUT_MS, PRESS_SILENCE_MS } from "@/lib/speechGate";
 import { MIC_ERROR_MESSAGES, VOICE_UNSUPPORTED_SPEAK } from "@/lib/phrases";
+import { browserSpeechLang } from "@/lib/i18n";
 import { useSpeechStore } from "@/stores/speechStore";
 import { useVoiceStore } from "@/stores/voiceStore";
 
@@ -168,8 +169,7 @@ export function useSpeechRecognition({
     finalsRef.current = [];
     deliveredRef.current = false;
     recognition.continuous = true;
-    const language = (useSpeechStore.getState().settings as { language?: string }).language;
-    recognition.lang = language === "ur" ? "ur-PK" : "en-IN";
+    recognition.lang = browserSpeechLang(useSpeechStore.getState().settings.language);
     void playListenStart(EARCON_MS);
     try {
       recognition.start();

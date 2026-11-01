@@ -123,6 +123,7 @@ class BrowserSession(BaseModel):
     last_error_code = models.CharField(max_length=64, blank=True)
     last_url = models.CharField(max_length=2048, blank=True)
     worker_queue = models.CharField(max_length=128, blank=True)
+    browser_closed_by_user = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = "Browser Session"
@@ -166,6 +167,8 @@ class AgentTask(BaseModel):
         related_name="agent_tasks",
     )
     goal = models.TextField()
+    goal_original = models.TextField(blank=True)
+    language = models.CharField(max_length=8, default="en")
     mode = models.CharField(
         max_length=16,
         choices=TaskMode.choices,

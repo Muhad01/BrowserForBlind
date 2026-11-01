@@ -453,7 +453,7 @@ async def test_runner_event_contract(runner_task):
     assert len(publisher.events) > 0
     # 1. Event ordering
     assert publisher.events[0]["event"] == "task_started"
-    assert publisher.events[0]["payload"]["brief"] == "Working on it."
+    assert publisher.events[0]["payload"]["brief"].startswith("Okay:")
     assert publisher.events[-1]["event"] == "task_completed"
 
     # 2. No agent_status because title never changed

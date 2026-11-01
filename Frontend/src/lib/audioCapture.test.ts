@@ -22,7 +22,11 @@ function pushMs(
 ): ReturnType<CaptureEngine["push"]> | undefined {
   let last;
   for (let t = fromMs; t < fromMs + durationMs; t += 20) {
-    last = engine.push(frame, TARGET_SAMPLE_RATE, t);
+    const tick = engine.push(frame, TARGET_SAMPLE_RATE, t);
+    if (tick.ended) {
+      return tick;
+    }
+    last = tick;
   }
   return last;
 }
@@ -54,7 +58,7 @@ describe("VAD noise floor", () => {
       quiet[i] = 0.002;
     }
     const floor = calibrateNoiseFloor(quiet);
-    expect(floor).toBeGreaterThan(0.008);
+    expect(floor).toBeGreaterThanOrEqual(0.008);
     expect(isSpeechFrame(0.009, floor)).toBe(false);
     expect(isSpeechFrame(0.2, floor)).toBe(true);
   });

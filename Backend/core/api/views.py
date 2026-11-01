@@ -6,17 +6,30 @@ Never returns tracebacks, internal paths, or unhandled exceptions (NFR-SEC-04/06
 import functools
 import json
 from typing import Any
+from urllib.parse import urlparse
 
+from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
+from django.core.cache import cache
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 from pydantic import BaseModel, Field, ValidationError
 
-from core.models import AgentTask
+from core.agent.transcriber import (
+    Transcriber,
+    TranscriptHints,
+    TranscriptionUnavailable,
+    validate_wav_header,
+)
+from core.errors import USER_MESSAGES, ErrorCode
+from core.models import AgentTask, BrowserSession, PageState
 from core.services.sessions import close_session
 from core.services.ws_tickets import issue_ticket
+
+TRANSCRIBE_RATE_LIMIT = 30
+TRANSCRIBE_RATE_WINDOW = 60
 
 
 def require_session_auth(view_func):
@@ -150,3 +163,103 @@ def session_close_view(request: HttpRequest) -> JsonResponse:
     """Close the user's active browser session (FR-02)."""
     close_session(request.user)
     return JsonResponse({"message": "Session closed successfully."})
+
+
+def _transcribe_hints(user: Any, language: str) -> TranscriptHints:
+    last_commands = list(
+        AgentTask.objects.filter(user=user)
+        .order_by("-created_at")
+        .values_list("goal_original", "goal")[:3]
+    )
+    commands = [(original or goal or "").strip() for original, goal in last_commands if (original or goal)]
+    session = (
+        BrowserSession.objects.filter(user=user)
+        .order_by("-created_at")
+        .first()
+    )
+    title = ""
+    host = ""
+    if session:
+        if session.last_url:
+            host = (urlparse(session.last_url).hostname or "")[:120]
+        page = (
+            PageState.objects.filter(task__session=session)
+            .order_by("-created_at")
+            .only("title")
+            .first()
+        )
+        if page:
+            title = (page.title or "")[:120]
+    return TranscriptHints(
+        page_title=title,
+        page_host=host,
+        last_commands=commands,
+        preferred_language=language,
+    )
+
+
+@require_POST
+@require_session_auth
+def transcribe_view(request: HttpRequest) -> JsonResponse:
+    """Transcribe a short spoken WAV.
+
+    Bounded exception to CON-01: this view waits on one short LLM call
+    (at most TRANSCRIBE_ATTEMPT_TIMEOUT_SECONDS per model attempt).
+    Audio is never stored on disk, in the database, or in logs.
+    """
+    rate_key = f"transcribe_rate:{request.user.id}"
+    used = cache.get(rate_key, 0)
+    if used >= TRANSCRIBE_RATE_LIMIT:
+        return JsonResponse(
+            {
+                "error_code": "RATE_LIMITED",
+                "message": USER_MESSAGES[ErrorCode.TRANSCRIPTION_UNAVAILABLE],
+                "speak": USER_MESSAGES[ErrorCode.TRANSCRIPTION_UNAVAILABLE],
+            },
+            status=429,
+        )
+    cache.set(rate_key, int(used) + 1, TRANSCRIBE_RATE_WINDOW)
+
+    upload = request.FILES.get("audio")
+    language = (request.POST.get("language") or "auto").strip().lower()
+    if language not in {"en", "ur", "auto"}:
+        language = "auto"
+    if upload is None:
+        return JsonResponse(
+            {"error_code": "INVALID_REQUEST", "message": "Missing audio field."},
+            status=400,
+        )
+    wav_bytes = upload.read()
+    reason = validate_wav_header(wav_bytes)
+    if reason:
+        return JsonResponse(
+            {"error_code": "INVALID_REQUEST", "message": "Audio must be mono 16 kHz 16-bit WAV."},
+            status=400,
+        )
+
+    hints = _transcribe_hints(request.user, language)
+    try:
+        result = async_to_sync(Transcriber().transcribe)(
+            wav_bytes,
+            hints=hints,
+            preferred_language=language,
+        )
+    except TranscriptionUnavailable:
+        return JsonResponse(
+            {
+                "error_code": "TRANSCRIPTION_UNAVAILABLE",
+                "message": USER_MESSAGES[ErrorCode.TRANSCRIPTION_UNAVAILABLE],
+                "speak": USER_MESSAGES[ErrorCode.TRANSCRIPTION_UNAVAILABLE],
+            },
+            status=503,
+        )
+    return JsonResponse(
+        {
+            "spoken_text": result.spoken_text,
+            "language": result.language,
+            "english_command": result.english_command,
+            "confidence": result.confidence,
+            "complete": result.complete,
+            "model": result.model,
+        }
+    )

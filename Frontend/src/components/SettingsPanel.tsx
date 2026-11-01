@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef } from "react";
 
 import styles from "@/components/console.module.css";
+import { msg, type UiLanguage } from "@/lib/i18n";
 import { useSpeechStore } from "@/stores/speechStore";
 
 export function SettingsPanel() {
@@ -16,6 +17,10 @@ export function SettingsPanel() {
   const modeId = useId();
   const verbosityId = useId();
   const talkModeId = useId();
+  const languageId = useId();
+  const engineId = useId();
+  const genderId = useId();
+  const lang: UiLanguage = settings.language === "ur" ? "ur" : "en";
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -36,9 +41,42 @@ export function SettingsPanel() {
       aria-labelledby={headingId}
       onClose={() => useSpeechStore.getState().setSettingsOpen(false)}
     >
-      <h2 id={headingId}>Settings</h2>
+      <h2 id={headingId}>{msg("settings", lang)}</h2>
       <div className={styles.field}>
-        <label htmlFor={modeId}>Output mode</label>
+        <label htmlFor={languageId}>{msg("language", lang)}</label>
+        <select
+          id={languageId}
+          className={styles.select}
+          value={settings.language}
+          onChange={(event) =>
+            useSpeechStore.getState().setSettings({
+              language: event.target.value === "ur" || event.target.value === "en" ? event.target.value : "auto",
+            })
+          }
+        >
+          <option value="auto">{msg("automatic", lang)}</option>
+          <option value="en">{msg("english", lang)}</option>
+          <option value="ur">{msg("urdu", lang)}</option>
+        </select>
+      </div>
+      <div className={styles.field}>
+        <label htmlFor={engineId}>{msg("sttEngine", lang)}</label>
+        <select
+          id={engineId}
+          className={styles.select}
+          value={settings.sttEngine}
+          onChange={(event) =>
+            useSpeechStore.getState().setSettings({
+              sttEngine: event.target.value === "browser" ? "browser" : "gemini",
+            })
+          }
+        >
+          <option value="gemini">{msg("engineGemini", lang)}</option>
+          <option value="browser">{msg("engineBrowser", lang)}</option>
+        </select>
+      </div>
+      <div className={styles.field}>
+        <label htmlFor={modeId}>{msg("outputMode", lang)}</label>
         <select
           id={modeId}
           className={styles.select}
@@ -54,7 +92,9 @@ export function SettingsPanel() {
         </select>
       </div>
       <div className={styles.field}>
-        <label htmlFor={rateId}>Speech rate ({settings.rate.toFixed(1)})</label>
+        <label htmlFor={rateId}>
+          {msg("speechRate", lang)} ({settings.rate.toFixed(1)})
+        </label>
         <input
           id={rateId}
           className={styles.input}
@@ -67,7 +107,7 @@ export function SettingsPanel() {
         />
       </div>
       <fieldset className={styles.fieldset} aria-labelledby={verbosityId}>
-        <legend id={verbosityId}>Narration detail</legend>
+        <legend id={verbosityId}>{msg("narrationDetail", lang)}</legend>
         <label className={styles.radio}>
           <input
             type="radio"
@@ -76,7 +116,7 @@ export function SettingsPanel() {
             checked={settings.verbosity === "brief"}
             onChange={() => useSpeechStore.getState().setSettings({ verbosity: "brief" })}
           />
-          Brief
+          {msg("brief", lang)}
         </label>
         <label className={styles.radio}>
           <input
@@ -86,11 +126,11 @@ export function SettingsPanel() {
             checked={settings.verbosity === "detailed"}
             onChange={() => useSpeechStore.getState().setSettings({ verbosity: "detailed" })}
           />
-          Detailed
+          {msg("detailed", lang)}
         </label>
       </fieldset>
       <fieldset className={styles.fieldset} aria-labelledby={talkModeId}>
-        <legend id={talkModeId}>Talk mode</legend>
+        <legend id={talkModeId}>{msg("talkMode", lang)}</legend>
         <label className={styles.radio}>
           <input
             type="radio"
@@ -99,7 +139,7 @@ export function SettingsPanel() {
             checked={settings.talkMode === "press"}
             onChange={() => useSpeechStore.getState().setSettings({ talkMode: "press" })}
           />
-          Press Space to talk
+          {msg("pressTalk", lang)}
         </label>
         <label className={styles.radio}>
           <input
@@ -109,11 +149,34 @@ export function SettingsPanel() {
             checked={settings.talkMode === "hold"}
             onChange={() => useSpeechStore.getState().setSettings({ talkMode: "hold" })}
           />
-          Hold Space to talk
+          {msg("holdTalk", lang)}
+        </label>
+      </fieldset>
+      <fieldset className={styles.fieldset} aria-labelledby={genderId}>
+        <legend id={genderId}>{msg("voice", lang)}</legend>
+        <label className={styles.radio}>
+          <input
+            type="radio"
+            name="voiceGender"
+            value="female"
+            checked={settings.voiceGender === "female"}
+            onChange={() => useSpeechStore.getState().setSettings({ voiceGender: "female", voiceURI: "" })}
+          />
+          {msg("female", lang)}
+        </label>
+        <label className={styles.radio}>
+          <input
+            type="radio"
+            name="voiceGender"
+            value="male"
+            checked={settings.voiceGender === "male"}
+            onChange={() => useSpeechStore.getState().setSettings({ voiceGender: "male", voiceURI: "" })}
+          />
+          {msg("male", lang)}
         </label>
       </fieldset>
       <div className={styles.field}>
-        <label htmlFor={voiceId}>Voice</label>
+        <label htmlFor={voiceId}>{msg("specificVoice", lang)}</label>
         <select
           id={voiceId}
           className={styles.select}
@@ -129,7 +192,7 @@ export function SettingsPanel() {
         </select>
       </div>
       <button className={styles.secondary} type="button" onClick={() => dialogRef.current?.close()}>
-        Close settings
+        {msg("closeSettings", lang)}
       </button>
     </dialog>
   );

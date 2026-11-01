@@ -89,8 +89,10 @@ class BrowserConsumer(AsyncJsonWebsocketConsumer):
                     user=user,
                     text=payload.text,
                     request_id=msg.request_id,
+                    spoken_text=payload.spoken_text,
+                    language=payload.language,
                 )
-                if res.get("status") in {"stopping", "no_active_task"}:
+                if res.get("status") in {"stopping", "no_active_task", "browser_closed"}:
                     await self.send_json({
                         "event": "agent_status",
                         "task_id": res.get("task_id"),
@@ -98,6 +100,7 @@ class BrowserConsumer(AsyncJsonWebsocketConsumer):
                         "payload": {
                             "speak": res.get("speak", "Stopping."),
                             "status": res.get("status"),
+                            "lang": res.get("lang", "en"),
                         },
                     })
                 elif res.get("status") == "error":

@@ -18,6 +18,8 @@ def create_task(
     goal: str,
     mode: TaskMode = TaskMode.TASK,
     dispatch: bool = True,
+    language: str = "en",
+    goal_original: str = "",
 ) -> AgentTask:
     """FR-07/08: Create a new PENDING AgentTask bound to the user's active session.
 
@@ -44,10 +46,15 @@ def create_task(
     from core.services.commands import is_information_goal
 
     with transaction.atomic():
+        if session.browser_closed_by_user:
+            session.browser_closed_by_user = False
+            session.save(update_fields=["browser_closed_by_user", "updated_at"])
         task = AgentTask.objects.create(
             user=user,
             session=session,
             goal=goal,
+            goal_original=goal_original or goal,
+            language=language if language in {"en", "ur"} else "en",
             mode=mode,
             status=TaskStatus.PENDING,
             needs_grounded_answer=bool(mode == TaskMode.TASK and is_information_goal(goal)),

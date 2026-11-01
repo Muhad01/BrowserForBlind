@@ -132,6 +132,9 @@ class BrowserUseGateway:
         self.headless = headless if headless is not None else getattr(settings, "BROWSER_HEADLESS", False)
         self.action_timeout = action_timeout or getattr(settings, "ACTION_TIMEOUT_SECONDS", 30)
         self.session = None
+        self.closed_by_user = False
+        self._closing_ourselves = False
+        self.on_user_closed = None
 
     async def start(self, profile_dir: Path) -> None:
         """Start a browser session using browser-use BrowserSession and BrowserProfile."""
@@ -156,9 +159,55 @@ class BrowserUseGateway:
         )
         self.session = BrowserSession(browser_profile=profile)
         await self.session.start()
+        self._attach_close_watch()
+
+    def _attach_close_watch(self) -> None:
+        bus = getattr(self.session, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            from browser_use.browser.events import BrowserStoppedEvent, TabClosedEvent
+
+            bus.on(TabClosedEvent, self._on_tab_closed)
+            bus.on(BrowserStoppedEvent, self._on_browser_stopped)
+        except Exception as err:
+            logger.warning("close_watch_attach_failed", error=str(err))
+
+    def _on_tab_closed(self, event: Any) -> None:
+        if self._closing_ourselves or self.closed_by_user:
+            return
+        pages = []
+        try:
+            pages = self.session.get_page_targets() if self.session else []
+        except Exception:
+            pages = []
+        real = []
+        for page in pages or []:
+            url = (getattr(page, "url", None) or getattr(page, "target_url", "") or "").strip()
+            if url and url != "about:blank":
+                real.append(page)
+        if real:
+            return
+        self._mark_user_closed()
+
+    def _on_browser_stopped(self, event: Any) -> None:
+        if self._closing_ourselves or self.closed_by_user:
+            return
+        self._mark_user_closed()
+
+    def _mark_user_closed(self) -> None:
+        self.closed_by_user = True
+        callback = self.on_user_closed
+        if callback:
+            try:
+                callback()
+            except Exception as err:
+                logger.warning("user_closed_callback_failed", error=str(err))
 
     async def ensure_page_tab(self, last_url: str = "") -> bool:
         """Create a tab if none exist or the focused target is gone. Logs tab_lost/tab_recovered."""
+        if self.closed_by_user:
+            return False
         if not self.session:
             return False
         reason = self._tab_loss_reason()
@@ -411,6 +460,7 @@ class BrowserUseGateway:
 
     async def close(self) -> None:
         """Safely close browser session (idempotent, with Windows transport drain)."""
+        self._closing_ourselves = True
         if self.session is not None:
             session = self.session
             self.session = None
@@ -578,6 +628,8 @@ class FakeBrowserGateway:
         self.page_tabs: list[str] | None = None
         self.focus_gone = False
         self.tab_recoveries: list[str] = []
+        self.closed_by_user = False
+        self.on_user_closed = None
 
     async def start(self, profile_dir: Path) -> None:
         self.started_profile = profile_dir
@@ -586,6 +638,8 @@ class FakeBrowserGateway:
             self.session = _FakeCdpSession()
 
     async def ensure_page_tab(self, last_url: str = "") -> bool:
+        if self.closed_by_user:
+            return False
         missing_tabs = self.page_tabs is not None and len(self.page_tabs) == 0
         if not missing_tabs and not self.focus_gone:
             return False

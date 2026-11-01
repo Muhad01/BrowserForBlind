@@ -57,6 +57,19 @@
   margin: 0.4rem 0;
 }
 
+.levelMeter {
+  height: 0.75rem;
+  margin: 0.4rem 0 0.8rem;
+  border: 2px solid var(--border);
+  background: var(--card);
+}
+
+.levelFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
 .perceptionMeta {
   margin: 0 0 0.35rem;
   font-weight: 700;

@@ -6,6 +6,7 @@ export interface SpeechItem {
   text: string;
   event?: string;
   priority: SpeechPriority;
+  lang?: string;
 }
 
 export class SpeechQueue {

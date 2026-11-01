@@ -83,9 +83,10 @@ export function decideNarration(
 
 export function narrateServerFrame(
   frame: ServerFrame,
-  speak: (text: string, options?: { priority?: SpeechPriority; event?: string; liveText?: string }) => void,
+  speak: (text: string, options?: { priority?: SpeechPriority; event?: string; liveText?: string; lang?: string }) => void,
 ): void {
   const decision = decideNarration(frame);
+  const lang = typeof frame.payload.lang === "string" ? frame.payload.lang : undefined;
   if (!decision.speakText) {
     if (decision.liveText) {
       useSpeechStore.getState().setLive(decision.liveText, decision.priority);
@@ -96,5 +97,6 @@ export function narrateServerFrame(
     priority: decision.priority,
     event: frame.event,
     liveText: decision.liveText,
+    lang,
   });
 }

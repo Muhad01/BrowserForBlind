@@ -136,7 +136,7 @@ def test_trim_accessible_name():
 
 
 def test_terminal_and_lifecycle_narration():
-    assert format_task_started("Find the nearest library") == "Starting: Find the nearest library"
+    assert format_task_started("Find the nearest library") == "Okay: Find the nearest library."
     assert format_stop("Found 3 results.") == "Done. Found 3 results."
     assert format_stop("Found 3 results.", "") == "Done. Found 3 results."
     assert format_stop("Found 3 results.", "Artificial intelligence") == (

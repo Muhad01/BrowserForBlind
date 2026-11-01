@@ -8,12 +8,14 @@ import { VoiceConsole, useConsoleActions } from "@/components/VoiceConsole";
 import styles from "@/components/console.module.css";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useRealtime } from "@/hooks/useRealtime";
-import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 import { ensureCsrfCookie, fetchMe } from "@/lib/api";
 import { unlockAudio } from "@/lib/earcons";
 import { sendStopTask, sendVoiceCommand, type TranscriptHandlers } from "@/lib/handleTranscript";
-import { HELP_SPEAK, VOICE_UNSUPPORTED_SPEAK, WELCOME_SPEAK } from "@/lib/phrases";
+import { msg } from "@/lib/i18n";
+import { HELP_SPEAK } from "@/lib/phrases";
+import { useSpeechStore } from "@/stores/speechStore";
 import { useAuthStore } from "@/stores/authStore";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useTaskStore } from "@/stores/taskStore";
@@ -32,14 +34,14 @@ export default function HomePage() {
   });
 
   const handlersRef = useRef<TranscriptHandlers>({
-    sendVoiceCommand: (text) => sendVoiceCommand(useConnectionStore.getState().client, text),
+    sendVoiceCommand: (text, extra) => sendVoiceCommand(useConnectionStore.getState().client, text, extra),
     repeatLast,
     openHelp: () => speak(HELP_SPEAK, { priority: "assertive" }),
   });
 
   useEffect(() => {
     handlersRef.current = {
-      sendVoiceCommand: (text) => sendVoiceCommand(useConnectionStore.getState().client, text),
+      sendVoiceCommand: (text, extra) => sendVoiceCommand(useConnectionStore.getState().client, text, extra),
       repeatLast,
       openHelp: () => speak(HELP_SPEAK, { priority: "assertive" }),
     };
@@ -47,17 +49,17 @@ export default function HomePage() {
 
   const transcriptHandlers = useMemo<TranscriptHandlers>(
     () => ({
-      sendVoiceCommand: (text) => handlersRef.current.sendVoiceCommand(text),
+      sendVoiceCommand: (text, extra) => handlersRef.current.sendVoiceCommand(text, extra),
       repeatLast: () => handlersRef.current.repeatLast(),
       openHelp: () => handlersRef.current.openHelp(),
     }),
     [],
   );
 
-  const { toggleListening, startListening, stopListening, closeMic } = useSpeechRecognition({
+  const { toggleListening, startListening, stopListening, closeMic, warmMic } = useVoiceInput({
     handlers: transcriptHandlers,
     bargeIn,
-    speakAssertive: (text) => speak(text, { priority: "assertive", event: "local" }),
+    speakAssertive: (text, lang) => speak(text, { priority: "assertive", event: "local", lang }),
   });
 
   const interrupt = useCallback(() => {
@@ -120,11 +122,13 @@ export default function HomePage() {
     unlockAudio();
     unlock();
     setStarted(true);
-    speak(WELCOME_SPEAK, { priority: "assertive" });
+    void warmMic();
+    const lang = useSpeechStore.getState().settings.language === "ur" ? "ur" : "en";
+    speak(msg("welcome", lang), { priority: "assertive", lang });
     if (!useVoiceStore.getState().supported) {
-      speak(VOICE_UNSUPPORTED_SPEAK, { priority: "assertive" });
+      speak(msg("voiceUnsupported", lang), { priority: "assertive", lang });
     }
-  }, [speak, unlock]);
+  }, [speak, unlock, warmMic]);
 
   return (
     <div className={styles.page}>
