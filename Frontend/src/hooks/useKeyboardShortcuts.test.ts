@@ -42,6 +42,16 @@ describe("keyboard shortcuts", () => {
     expect(onAction).toHaveBeenCalledWith("listen-stop");
   });
 
+  it("ignores Space auto-repeat in press mode so capture is not toggled off", () => {
+    useSpeechStore.getState().setSettings({ talkMode: "press" });
+    const onAction = vi.fn();
+    renderHook(() => useKeyboardShortcuts(true, onAction));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", repeat: false, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", repeat: true, bubbles: true }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith("toggle-listen");
+  });
+
   it("does not fire while focus is in a text field", () => {
     const onAction = vi.fn();
     renderHook(() => useKeyboardShortcuts(true, onAction));

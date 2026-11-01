@@ -1,7 +1,7 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import { accumulateFinals, joinFinals, useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { MIC_ERROR_MESSAGES } from "@/lib/phrases";
 import { resetStores } from "@/test/resetStores";
 import { useSpeechStore } from "@/stores/speechStore";
@@ -24,6 +24,41 @@ class MockRecognition {
     MockRecognition.last = this;
   }
 }
+
+function resultEvent(results: Array<{ transcript: string; isFinal: boolean }>, resultIndex = 0) {
+  return {
+    resultIndex,
+    results: results.map((item) => ({
+      isFinal: item.isFinal,
+      0: { transcript: item.transcript, confidence: 1 },
+    })),
+  } as unknown as SpeechRecognitionEvent;
+}
+
+describe("accumulateFinals", () => {
+  it("keeps every final segment across two pauses, not only resultIndex", () => {
+    let finals: string[] = [];
+    finals = accumulateFinals(
+      finals,
+      resultEvent([
+        { transcript: "Open Wikipedia", isFinal: true },
+        { transcript: "and search", isFinal: true },
+      ]),
+    );
+    finals = accumulateFinals(
+      finals,
+      resultEvent(
+        [
+          { transcript: "Open Wikipedia", isFinal: true },
+          { transcript: "and search", isFinal: true },
+          { transcript: "for Babar Azam", isFinal: true },
+        ],
+        2,
+      ),
+    );
+    expect(joinFinals(finals)).toBe("Open Wikipedia and search for Babar Azam");
+  });
+});
 
 describe("useSpeechRecognition", () => {
   const bargeIn = vi.fn();
@@ -84,15 +119,15 @@ describe("useSpeechRecognition", () => {
     );
   }
 
-  it("closes the gate and barges in before starting the microphone", async () => {
+  it("starts the recognizer immediately while the earcon plays in parallel", async () => {
     const { result } = renderRecognition();
     const pending = result.current.startListening();
     expect(useVoiceStore.getState().listening).toBe(true);
     expect(bargeIn).toHaveBeenCalled();
-    expect(MockRecognition.last?.start).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(150);
-    await pending;
     expect(MockRecognition.last?.start).toHaveBeenCalled();
+    expect(MockRecognition.last?.continuous).toBe(true);
+    expect(MockRecognition.last?.lang).toBe("en-IN");
+    await pending;
     expect(useSpeechStore.getState().politeLive).toBe("Listening");
   });
 
@@ -108,47 +143,53 @@ describe("useSpeechRecognition", () => {
     expect(speakAssertive).not.toHaveBeenCalledWith(expect.stringMatching(/aborted/i));
   });
 
-  it("uses continuous recognition in hold mode and joins finals on end", async () => {
-    useSpeechStore.getState().setSettings({ talkMode: "hold" });
+  it("joins three final segments across two pauses and delivers once on end", async () => {
     const { result } = renderRecognition();
-    const pending = result.current.startListening();
-    await vi.advanceTimersByTimeAsync(150);
-    await pending;
-    expect(MockRecognition.last?.continuous).toBe(true);
-    MockRecognition.last?.onresult?.({
-      resultIndex: 0,
-      results: [{ isFinal: true, 0: { transcript: "Search Wikipedia", confidence: 1 } }],
-    } as unknown as SpeechRecognitionEvent);
-    MockRecognition.last?.onresult?.({
-      resultIndex: 0,
-      results: [{ isFinal: true, 0: { transcript: "for cats", confidence: 1 } }],
-    } as unknown as SpeechRecognitionEvent);
+    await result.current.startListening();
+    const recognition = MockRecognition.last;
+    recognition?.onresult?.(
+      resultEvent([{ transcript: "Open Wikipedia", isFinal: true }]),
+    );
+    recognition?.onresult?.(
+      resultEvent(
+        [
+          { transcript: "Open Wikipedia", isFinal: true },
+          { transcript: "and search", isFinal: true },
+        ],
+        1,
+      ),
+    );
+    recognition?.onresult?.(
+      resultEvent(
+        [
+          { transcript: "Open Wikipedia", isFinal: true },
+          { transcript: "and search", isFinal: true },
+          { transcript: "for Babar Azam", isFinal: true },
+        ],
+        2,
+      ),
+    );
     expect(sendVoiceCommand).not.toHaveBeenCalled();
-    MockRecognition.last?.onend?.();
-    expect(sendVoiceCommand).toHaveBeenCalledWith("Search Wikipedia for cats");
+    recognition?.onend?.();
+    expect(sendVoiceCommand).toHaveBeenCalledTimes(1);
+    expect(sendVoiceCommand).toHaveBeenCalledWith("Open Wikipedia and search for Babar Azam");
+  });
+
+  it("does not end press-mode capture after a 1s mid-sentence pause", async () => {
+    const { result } = renderRecognition();
+    await result.current.startListening();
+    MockRecognition.last?.onresult?.(resultEvent([{ transcript: "Open Wikipedia", isFinal: true }]));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockRecognition.last?.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(900);
+    expect(MockRecognition.last?.stop).toHaveBeenCalled();
   });
 
   it("stopListening calls stop not abort", async () => {
     const { result } = renderRecognition();
-    const pending = result.current.startListening();
-    await vi.advanceTimersByTimeAsync(150);
-    await pending;
+    await result.current.startListening();
     result.current.stopListening();
     expect(MockRecognition.last?.stop).toHaveBeenCalled();
     expect(MockRecognition.last?.abort).not.toHaveBeenCalled();
-  });
-
-  it("sends a final transcript as a voice command", () => {
-    renderRecognition();
-    MockRecognition.last?.onresult?.({
-      resultIndex: 0,
-      results: [
-        {
-          isFinal: true,
-          0: { transcript: "Search Wikipedia for cats", confidence: 1 },
-        },
-      ],
-    } as unknown as SpeechRecognitionEvent);
-    expect(sendVoiceCommand).toHaveBeenCalledWith("Search Wikipedia for cats");
   });
 });

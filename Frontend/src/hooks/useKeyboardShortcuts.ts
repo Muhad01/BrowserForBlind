@@ -19,10 +19,11 @@ export function useKeyboardShortcuts(
       }
       if (event.key === " " || event.code === "Space") {
         event.preventDefault();
+        if (event.repeat) {
+          return;
+        }
         if (useSpeechStore.getState().settings.talkMode === "hold") {
-          if (!event.repeat) {
-            onAction("listen-start");
-          }
+          onAction("listen-start");
           return;
         }
         onAction("toggle-listen");

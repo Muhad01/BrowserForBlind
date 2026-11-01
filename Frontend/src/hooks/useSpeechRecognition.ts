@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { playErrorEarcon, playListenStart, playListenStop } from "@/lib/earcons";
 import { handleTranscript, type TranscriptHandlers } from "@/lib/handleTranscript";
-import { EARCON_MS, LISTEN_TIMEOUT_MS } from "@/lib/speechGate";
-import { MIC_ERROR_MESSAGES, SPEECH_LANG, VOICE_UNSUPPORTED_SPEAK } from "@/lib/phrases";
+import { EARCON_MS, LISTEN_TIMEOUT_MS, PRESS_SILENCE_MS } from "@/lib/speechGate";
+import { MIC_ERROR_MESSAGES, VOICE_UNSUPPORTED_SPEAK } from "@/lib/phrases";
 import { useSpeechStore } from "@/stores/speechStore";
 import { useVoiceStore } from "@/stores/voiceStore";
 
@@ -14,6 +14,21 @@ export function getSpeechRecognitionCtor(): SpeechRecognitionConstructor | null 
     return null;
   }
   return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+}
+
+export function accumulateFinals(finals: string[], event: SpeechRecognitionEvent): string[] {
+  const next = finals.slice();
+  for (let i = 0; i < event.results.length; i += 1) {
+    const result = event.results[i];
+    if (result.isFinal) {
+      next[i] = result[0]?.transcript ?? "";
+    }
+  }
+  return next;
+}
+
+export function joinFinals(finals: string[]): string {
+  return finals.filter((part) => part.trim()).join(" ").replace(/\s+/g, " ").trim();
 }
 
 interface UseSpeechRecognitionOptions {
@@ -33,6 +48,8 @@ export function useSpeechRecognition({
   const bargeInRef = useRef(bargeIn);
   const finalsRef = useRef<string[]>([]);
   const listenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deliveredRef = useRef(false);
 
   useEffect(() => {
     handlersRef.current = handlers;
@@ -47,6 +64,25 @@ export function useSpeechRecognition({
     }
   }, []);
 
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  }, []);
+
+  const deliverOnce = useCallback(() => {
+    if (deliveredRef.current) {
+      return;
+    }
+    deliveredRef.current = true;
+    const text = joinFinals(finalsRef.current);
+    finalsRef.current = [];
+    if (text) {
+      handleTranscript(text, handlersRef.current);
+    }
+  }, []);
+
   useEffect(() => {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
@@ -56,28 +92,31 @@ export function useSpeechRecognition({
     }
     useVoiceStore.getState().setSupported(true);
     const recognition = new Ctor();
-    recognition.lang = SPEECH_LANG;
     recognition.interimResults = true;
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event) => {
+      finalsRef.current = accumulateFinals(finalsRef.current, event);
       let interim = "";
-      const holdMode = useSpeechStore.getState().settings.talkMode === "hold";
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      for (let i = 0; i < event.results.length; i += 1) {
         const result = event.results[i];
-        const transcript = result[0]?.transcript ?? "";
-        if (result.isFinal) {
-          finalsRef.current.push(transcript);
-          if (!holdMode) {
-            handleTranscript(transcript, handlersRef.current);
-          }
-        } else {
-          interim += transcript;
+        if (!result.isFinal) {
+          interim += result[0]?.transcript ?? "";
         }
       }
       if (interim) {
         useVoiceStore.getState().setInterim(interim);
+      }
+      if (useSpeechStore.getState().settings.talkMode === "press") {
+        clearSilenceTimer();
+        silenceTimerRef.current = setTimeout(() => {
+          try {
+            recognition.stop();
+          } catch {
+            useVoiceStore.getState().setListening(false);
+          }
+        }, PRESS_SILENCE_MS);
       }
     };
 
@@ -98,11 +137,8 @@ export function useSpeechRecognition({
     recognition.onend = () => {
       playListenStop();
       clearListenTimer();
-      const holdMode = useSpeechStore.getState().settings.talkMode === "hold";
-      if (holdMode && finalsRef.current.length) {
-        handleTranscript(finalsRef.current.join(" ").trim(), handlersRef.current);
-      }
-      finalsRef.current = [];
+      clearSilenceTimer();
+      deliverOnce();
       useVoiceStore.getState().setListening(false);
     };
 
@@ -114,8 +150,9 @@ export function useSpeechRecognition({
       recognition.abort();
       recognitionRef.current = null;
       clearListenTimer();
+      clearSilenceTimer();
     };
-  }, [clearListenTimer]);
+  }, [clearListenTimer, clearSilenceTimer, deliverOnce]);
 
   const startListening = useCallback(async () => {
     const recognition = recognitionRef.current;
@@ -123,18 +160,17 @@ export function useSpeechRecognition({
       speakAssertiveRef.current(VOICE_UNSUPPORTED_SPEAK);
       return;
     }
-    // Close the gate first so arriving frames cannot speak.
     useVoiceStore.getState().setListening(true);
     bargeInRef.current();
     useVoiceStore.getState().setError(null);
     useVoiceStore.getState().setInterim("");
     useSpeechStore.getState().setLive("Listening", "polite");
     finalsRef.current = [];
-    recognition.continuous = useSpeechStore.getState().settings.talkMode === "hold";
-    await playListenStart(EARCON_MS);
-    if (!useVoiceStore.getState().listening) {
-      return;
-    }
+    deliveredRef.current = false;
+    recognition.continuous = true;
+    const language = (useSpeechStore.getState().settings as { language?: string }).language;
+    recognition.lang = language === "ur" ? "ur-PK" : "en-IN";
+    void playListenStart(EARCON_MS);
     try {
       recognition.start();
     } catch {
@@ -158,16 +194,18 @@ export function useSpeechRecognition({
       return;
     }
     clearListenTimer();
+    clearSilenceTimer();
     try {
       recognition.stop();
     } catch {
       useVoiceStore.getState().setListening(false);
     }
-  }, [clearListenTimer]);
+  }, [clearListenTimer, clearSilenceTimer]);
 
   const closeMic = useCallback(() => {
     const recognition = recognitionRef.current;
     clearListenTimer();
+    clearSilenceTimer();
     if (recognition) {
       try {
         recognition.stop();
@@ -176,7 +214,7 @@ export function useSpeechRecognition({
       }
     }
     useVoiceStore.getState().setListening(false);
-  }, [clearListenTimer]);
+  }, [clearListenTimer, clearSilenceTimer]);
 
   const toggleListening = useCallback(() => {
     if (useVoiceStore.getState().listening) {
