@@ -23,6 +23,12 @@ def setup_periodic_tasks(sender, **kwargs):
 def on_worker_ready(sender, **kwargs):
     """Reap abandoned or interrupted tasks upon worker startup (NFR-REL-02)."""
     try:
+        from core.agent.worker_lock import try_acquire_browser_worker
+        try_acquire_browser_worker()
+    except Exception as e:
+        import structlog
+        structlog.get_logger(__name__).error("Failed to acquire browser worker lock", error=str(e))
+    try:
         from core.services.recovery import reap_stale_tasks
         reap_stale_tasks()
     except Exception as e:
@@ -45,4 +51,10 @@ def on_worker_shutdown(sender, **kwargs):
     except Exception as e:
         import structlog
         structlog.get_logger(__name__).warning("Failed to close hosted browsers on shutdown", error=str(e))
+    try:
+        from core.agent.worker_lock import release_browser_worker_lock
+        release_browser_worker_lock()
+    except Exception as e:
+        import structlog
+        structlog.get_logger(__name__).warning("Failed to release browser worker lock", error=str(e))
 

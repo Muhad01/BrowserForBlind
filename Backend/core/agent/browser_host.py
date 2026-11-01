@@ -213,6 +213,7 @@ class BrowserHost:
         entry = self._entries.get(sid)
         if entry is not None:
             if await self._is_healthy(entry.gateway):
+                await self._ensure_page_tab(entry.gateway, last_url)
                 current = await self._current_url(entry.gateway)
                 if last_url and _is_blank_url(current):
                     restored = await self._navigate_last_url(entry.gateway, last_url, sid)
@@ -240,6 +241,7 @@ class BrowserHost:
 
         gateway = self._factory()
         await gateway.start(profile_dir)
+        await self._ensure_page_tab(gateway, last_url)
         restored = False
         if last_url:
             restored = await self._navigate_last_url(gateway, last_url, sid)
@@ -298,6 +300,17 @@ class BrowserHost:
                     logger.warning("browser_host_reaper_error", error=str(err))
         except asyncio.CancelledError:
             return
+
+    async def _ensure_page_tab(self, gateway: BrowserGateway, last_url: str) -> None:
+        ensure = getattr(gateway, "ensure_page_tab", None)
+        if ensure is None:
+            return
+        try:
+            result = ensure(last_url)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as err:
+            logger.warning("tab_recover_failed", error=str(err))
 
     async def _navigate_last_url(self, gateway: BrowserGateway, last_url: str, session_id: str) -> bool:
         nav = NormalizedAction(

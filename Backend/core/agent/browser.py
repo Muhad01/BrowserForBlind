@@ -117,6 +117,10 @@ class BrowserGateway(Protocol):
         """Capture URL, title, screenshot, and main text for the Perception Agent (FR-26)."""
         ...
 
+    async def ensure_page_tab(self, last_url: str = "") -> bool:
+        """Open a tab if the session has none or the focused target is gone."""
+        ...
+
 
 class BrowserUseGateway:
     """Production browser gateway wrapping browser-use 0.13.14 primitives.
@@ -137,6 +141,13 @@ class BrowserUseGateway:
         from browser_use.browser.session import BrowserSession
 
         profile_dir.mkdir(parents=True, exist_ok=True)
+        from core.agent.profile_locks import clear_stale_profile_locks
+
+        # AboutBlankWatchdog cannot be disabled via BrowserProfile in 0.13.14. It does
+        # not close page tabs; it only opens about:blank when zero tabs remain. Tab
+        # death in live runs is more often a stolen profile (second worker / stale
+        # SingletonLock) or a detached focus target. See tab_lost / tab_recovered logs.
+        clear_stale_profile_locks(profile_dir)
         # FR-38: captcha_solver=False is mandatory per SRS scope
         profile = BrowserProfile(
             user_data_dir=str(profile_dir),
@@ -146,10 +157,60 @@ class BrowserUseGateway:
         self.session = BrowserSession(browser_profile=profile)
         await self.session.start()
 
+    async def ensure_page_tab(self, last_url: str = "") -> bool:
+        """Create a tab if none exist or the focused target is gone. Logs tab_lost/tab_recovered."""
+        if not self.session:
+            return False
+        reason = self._tab_loss_reason()
+        if not reason:
+            return False
+        logger.warning("tab_lost", reason=reason)
+        url = (last_url or "").strip() or "about:blank"
+        try:
+            from browser_use.browser.events import NavigateToUrlEvent
+
+            event = self.session.event_bus.dispatch(NavigateToUrlEvent(url=url, new_tab=True))
+            if hasattr(event, "__await__"):
+                await event
+            logger.info("tab_recovered", url=url, reason=reason)
+            return True
+        except Exception as err:
+            logger.warning("tab_recover_failed", reason=reason, error=str(err))
+            return False
+
+    def _tab_loss_reason(self) -> str | None:
+        session = self.session
+        if session is None:
+            return "no_session"
+        if not hasattr(session, "get_page_targets"):
+            return None
+        try:
+            pages = session.get_page_targets() or []
+        except Exception as err:
+            logger.warning("tab_lost", reason="page_targets_failed", error=str(err))
+            return "page_targets_failed"
+        if not pages:
+            return "no_page_tabs"
+        focused = None
+        try:
+            getter = getattr(session, "get_focused_target", None)
+            focused = getter() if getter else None
+        except Exception as err:
+            logger.warning("tab_lost", reason="focus_check_failed", error=str(err))
+            return "focus_gone"
+        if focused is None:
+            return "focus_gone"
+        focus_id = getattr(focused, "target_id", None)
+        page_ids = {getattr(page, "target_id", None) for page in pages}
+        if focus_id and focus_id not in page_ids:
+            return "focus_gone"
+        return None
+
     async def observe(self) -> PageObservation:
         """Extract DOM elements, indexes, and accessibility tags."""
         if not self.session:
             raise RuntimeError("Browser session has not been started.")
+        await self.ensure_page_tab()
 
         state = await self.session.get_browser_state_summary(include_screenshot=False)
 
@@ -369,6 +430,7 @@ class BrowserUseGateway:
         """Capture viewport screenshot, main text, and page structure (FR-26, NFR-SEC-07)."""
         if not self.session:
             raise RuntimeError("Browser session has not been started.")
+        await self.ensure_page_tab()
 
         url = "about:blank"
         title = ""
@@ -513,6 +575,9 @@ class FakeBrowserGateway:
         self.is_closed = False
         self.started_profile: Path | None = None
         self.session: _FakeCdpSession | None = None
+        self.page_tabs: list[str] | None = None
+        self.focus_gone = False
+        self.tab_recoveries: list[str] = []
 
     async def start(self, profile_dir: Path) -> None:
         self.started_profile = profile_dir
@@ -520,7 +585,25 @@ class FakeBrowserGateway:
         if self.session is None:
             self.session = _FakeCdpSession()
 
+    async def ensure_page_tab(self, last_url: str = "") -> bool:
+        missing_tabs = self.page_tabs is not None and len(self.page_tabs) == 0
+        if not missing_tabs and not self.focus_gone:
+            return False
+        reason = "no_page_tabs" if missing_tabs else "focus_gone"
+        logger.warning("tab_lost", reason=reason)
+        url = (last_url or "").strip() or "about:blank"
+        if self.page_tabs is None:
+            self.page_tabs = []
+        self.page_tabs.append(url)
+        self.focus_gone = False
+        self.tab_recoveries.append(url)
+        if self.session is not None:
+            self.session._url = url
+        logger.info("tab_recovered", url=url, reason=reason)
+        return True
+
     async def observe(self) -> PageObservation:
+        await self.ensure_page_tab()
         if self.pages:
             return self.pages.pop(0)
         return PageObservation(url="https://example.com", title="Example Domain")
@@ -558,6 +641,7 @@ class FakeBrowserGateway:
         return await self.session.get_current_page_url()
 
     async def capture_for_perception(self) -> PerceptionCapture:
+        await self.ensure_page_tab()
         if self.captures:
             return self.captures.pop(0)
         page = self.pages[0] if self.pages else PageObservation(url="https://example.com", title="Example Domain")

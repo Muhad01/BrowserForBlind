@@ -3,6 +3,7 @@
 CON-01: Celery runs all long browser/AI work (never inside HTTP views or Channels consumers).
 """
 import structlog
+from asgiref.sync import async_to_sync
 from celery import shared_task
 from django.conf import settings
 
@@ -13,7 +14,9 @@ from core.agent.llm import GeminiClient
 from core.agent.perception import PerceptionAgent
 from core.agent.runner import TaskRunner
 from core.agent.safety import PlaceholderSafetyPolicy
+from core.agent.worker_lock import WORKER_BUSY_MESSAGE, browser_worker_available
 from core.enums import TaskMode, TaskStatus
+from core.errors import USER_MESSAGES, ErrorCode
 from core.models import AgentTask
 
 logger = structlog.get_logger(__name__)
@@ -75,6 +78,29 @@ async def execute_on_host(
     await runner.run()
 
 
+def _fail_busy_worker(task: AgentTask) -> None:
+    task.error_code = ErrorCode.TASK_INTERRUPTED.value
+    task.error_message = WORKER_BUSY_MESSAGE
+    task.result_text = WORKER_BUSY_MESSAGE
+    task.save(update_fields=["error_code", "error_message", "result_text", "updated_at"])
+    try:
+        task.transition_to(TaskStatus.FAILED)
+    except Exception as err:
+        logger.error("busy_worker_fail_transition", error=str(err))
+    try:
+        async_to_sync(ChannelsEventPublisher().publish)(
+            task,
+            "task_failed",
+            {
+                "speak": WORKER_BUSY_MESSAGE,
+                "error_code": ErrorCode.TASK_INTERRUPTED.value,
+                "message": WORKER_BUSY_MESSAGE,
+            },
+        )
+    except Exception as err:
+        logger.warning("busy_worker_event_failed", error=str(err))
+
+
 def _execute_agent_task(task: AgentTask) -> None:
     """Run the task on the process-wide BrowserHost loop so Chromium stays open."""
     host = get_browser_host()
@@ -101,6 +127,11 @@ def run_agent_task(self, task_id: str) -> None:
         logger.warning("Task is not in PENDING status, skipping execution", status=task.status)
         return
 
+    if not browser_worker_available():
+        logger.error("browser_worker_lock_held", task_id=task_id)
+        _fail_busy_worker(task)
+        return
+
     task.transition_to(TaskStatus.RUNNING)
 
     try:
@@ -113,8 +144,6 @@ def run_agent_task(self, task_id: str) -> None:
             TaskStatus.FAILED.value,
             TaskStatus.CANCELLED.value,
         }:
-            from core.errors import USER_MESSAGES, ErrorCode
-
             task.error_code = ErrorCode.INTERNAL_ERROR.value
             task.error_message = USER_MESSAGES.get(ErrorCode.INTERNAL_ERROR, "An internal error occurred.")
             task.save(update_fields=["error_code", "error_message", "updated_at"])
