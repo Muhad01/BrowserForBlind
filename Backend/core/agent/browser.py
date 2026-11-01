@@ -10,6 +10,7 @@ import structlog
 from django.conf import settings
 
 from core.agent.narration import compute_accessible_name, compute_role, is_url_like
+from core.agent.perception import article_text_from_sources
 from core.agent.schema import (
     ElementMeta,
     ExecResult,
@@ -397,8 +398,12 @@ class BrowserUseGateway:
         except Exception as err:
             logger.warning("perception_markdown_failed", error=str(err))
 
+        html = await self._fetch_page_html()
+        article_text = article_text_from_sources(html, main_text)[:MAIN_TEXT_CAP]
+
         if secrets:
             main_text = mask_secrets(main_text, secrets)
+            article_text = mask_secrets(article_text, secrets)
 
         headings = list(meta.get("headings") or [])
         if not headings:
@@ -417,6 +422,7 @@ class BrowserUseGateway:
             title=title,
             screenshot_png=screenshot,
             main_text=main_text,
+            article_text=article_text,
             headings=headings,
             landmarks=list(meta.get("landmarks") or []),
             link_count=int(meta.get("link_count") or 0),
@@ -424,6 +430,26 @@ class BrowserUseGateway:
             field_count=int(meta.get("field_count") or 0),
             has_filled_password=has_filled_password,
         )
+
+    async def _fetch_page_html(self) -> str:
+        """Read document.documentElement.outerHTML via the browser-use CDP session."""
+        if not self.session:
+            return ""
+        try:
+            cdp_session = await self.session.get_or_create_cdp_session()
+            result = await cdp_session.cdp_client.send.Runtime.evaluate(
+                params={
+                    "expression": "document.documentElement.outerHTML",
+                    "returnByValue": True,
+                    "awaitPromise": False,
+                },
+                session_id=cdp_session.session_id,
+            )
+            value = (result or {}).get("result", {}).get("value")
+            return value if isinstance(value, str) else ""
+        except Exception as err:
+            logger.warning("perception_html_failed", error=str(err))
+            return ""
 
     async def _collect_perception_dom(self) -> dict[str, Any]:
         empty: dict[str, Any] = {

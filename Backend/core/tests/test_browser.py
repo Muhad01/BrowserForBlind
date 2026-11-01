@@ -134,6 +134,7 @@ async def test_capture_skips_screenshot_when_password_filled(monkeypatch):
         return ("Password is hunter2 on this form.", {})
 
     monkeypatch.setattr(BrowserUseGateway, "_collect_perception_dom", fake_dom)
+    monkeypatch.setattr(BrowserUseGateway, "_fetch_page_html", AsyncMock(return_value=""))
 
     import sys
     import types
@@ -162,6 +163,61 @@ def test_resize_screenshot_jpeg_caps_width():
     image = Image.open(BytesIO(out))
     assert image.width <= 1280
     assert image.format == "JPEG"
+
+
+@pytest.mark.asyncio
+async def test_capture_extracts_article_from_html_not_menu(monkeypatch):
+    from pathlib import Path
+
+    html = (Path(__file__).parent / "fixtures" / "wikipedia_ai.html").read_text(encoding="utf-8")
+    jpeg = _tiny_jpeg()
+    evaluate = AsyncMock(return_value={"result": {"value": html}})
+    gateway = BrowserUseGateway()
+    gateway.session = SimpleNamespace(
+        get_current_page_url=AsyncMock(
+            return_value="https://en.wikipedia.org/wiki/Artificial_intelligence"
+        ),
+        get_current_page_title=AsyncMock(return_value="Artificial intelligence"),
+        take_screenshot=AsyncMock(return_value=jpeg),
+        get_or_create_cdp_session=AsyncMock(
+            return_value=SimpleNamespace(
+                session_id="sess-1",
+                cdp_client=SimpleNamespace(
+                    send=SimpleNamespace(Runtime=SimpleNamespace(evaluate=evaluate))
+                ),
+            )
+        ),
+    )
+
+    async def fake_dom(_self):
+        return {
+            "headings": ["Artificial intelligence"],
+            "landmarks": ["main", "nav"],
+            "link_count": 12,
+            "button_count": 0,
+            "field_count": 0,
+            "password_values": [],
+            "has_filled_password": False,
+        }
+
+    async def fake_markdown(**_kwargs):
+        return ("Main menu\n\nJump to content\n\n- [Main page](/wiki/Main_Page)\n", {})
+
+    monkeypatch.setattr(BrowserUseGateway, "_collect_perception_dom", fake_dom)
+    import sys
+    import types
+
+    fake_mod = types.ModuleType("browser_use.dom.markdown_extractor")
+    fake_mod.extract_clean_markdown = fake_markdown
+    monkeypatch.setitem(sys.modules, "browser_use.dom.markdown_extractor", fake_mod)
+
+    capture = await gateway.capture_for_perception()
+    assert "capability of computational systems" in capture.article_text
+    assert "Main menu" not in capture.article_text
+    evaluate.assert_awaited()
+    params = evaluate.await_args.kwargs["params"]
+    assert params["expression"] == "document.documentElement.outerHTML"
+    assert params["returnByValue"] is True
 
 
 def test_headings_from_markdown_h1_h3_only():

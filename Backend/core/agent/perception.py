@@ -64,12 +64,23 @@ EMPTY_PAGE_TEXT = "This page looks empty or didn't load."
 NOT_ON_PAGE_TEXT = "I can't find that on this page."
 RECENCY_RE = re.compile(r"\b(today|latest|current|now)\b", re.IGNORECASE)
 
+ARTICLE_MIN_CHARS = 300
 _BOILERPLATE_RE = re.compile(
     r"(cookie|consent|accept all|reject all|privacy policy|terms of (use|service)|"
     r"subscribe to|sign in|log in|advertisement|skip to (main )?content|"
+    r"jump to (content|navigation)|main menu|"
     r"enable (javascript|cookies))",
     re.IGNORECASE,
 )
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+_MD_BOLD_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
+_MD_ITALIC_RE = re.compile(r"(?<!\w)_([^_]+)_(?!\w)")
+_MD_CODE_RE = re.compile(r"`([^`]+)`")
+_REF_MARK_RE = re.compile(r"\[(\d+)\]")
+_EDIT_RE = re.compile(r"\[edit\]", re.IGNORECASE)
+_LEADING_LIST_RE = re.compile(r"^[-*+•]\s+\S+")
+_TOC_NUM_RE = re.compile(r"^\d+(\.\d+)*\s+\S+")
 _NAV_WORDS = {
     "home",
     "news",
@@ -132,7 +143,7 @@ class PlaceholderPerceptionAgent:
 def is_unusable_capture(capture: PerceptionCapture) -> bool:
     """True when the page is blank or failed to load — do not call the model."""
     url = (capture.url or "").strip().lower()
-    text = (capture.main_text or "").strip()
+    text = (capture.article_text or capture.main_text or "").strip()
     title = (capture.title or "").strip().lower()
     headings = [h for h in capture.headings if h.strip()]
     if url in {"", "about:blank"} and not text and not headings:
@@ -146,12 +157,36 @@ def is_unusable_capture(capture: PerceptionCapture) -> bool:
     return not text and not headings and capture.screenshot_png is None
 
 
-def is_boilerplate_line(line: str) -> bool:
+def is_link_heavy_line(line: str) -> bool:
     stripped = line.strip()
+    if not stripped or not _MD_LINK_RE.search(stripped):
+        return False
+    leftover = _MD_LINK_RE.sub("", stripped).strip(" -*|•")
+    return len(leftover) <= 12
+
+
+def is_short_list_item(line: str) -> bool:
+    stripped = line.strip()
+    if _LEADING_LIST_RE.match(stripped) and len(stripped.split()) <= 8:
+        return True
+    return bool(
+        _TOC_NUM_RE.match(stripped)
+        and len(stripped.split()) <= 8
+        and not stripped.endswith((".", "!", "?"))
+    )
+
+
+def is_boilerplate_line(line: str) -> bool:
+    stripped = _EDIT_RE.sub("", line).strip()
     if not stripped:
+        return True
+    low = stripped.lower()
+    if low in {"main menu", "jump to content", "jump to navigation", "contents", "navigation"}:
         return True
     words = stripped.split()
     if _BOILERPLATE_RE.search(stripped) and len(words) <= 16:
+        return True
+    if is_link_heavy_line(stripped):
         return True
     lowered = [w.lower().strip(".,:;!?") for w in words]
     if 2 <= len(words) <= 8 and all(len(w) < 18 for w in words):
@@ -162,13 +197,77 @@ def is_boilerplate_line(line: str) -> bool:
     return False
 
 
+def _drop_leading_menu(lines: list[str]) -> list[str]:
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            continue
+        if is_boilerplate_line(stripped) or is_short_list_item(stripped) or is_link_heavy_line(stripped):
+            index += 1
+            continue
+        break
+    return lines[index:]
+
+
 def filter_boilerplate(text: str) -> str:
+    raw_lines = (text or "").splitlines()
+    raw_lines = _drop_leading_menu(raw_lines)
     paragraphs: list[str] = []
-    for block in re.split(r"\n\s*\n", text or ""):
-        kept = [ln.strip() for ln in block.splitlines() if ln.strip() and not is_boilerplate_line(ln)]
-        if kept:
-            paragraphs.append(" ".join(kept))
+    current: list[str] = []
+    for line in raw_lines:
+        stripped = _EDIT_RE.sub("", line).strip()
+        if not stripped:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        if is_boilerplate_line(stripped) or is_link_heavy_line(stripped):
+            continue
+        current.append(stripped)
+    if current:
+        paragraphs.append(" ".join(current))
     return "\n\n".join(paragraphs)
+
+
+def strip_markdown_for_speech(text: str) -> str:
+    """Remove markdown syntax and citation marks before speaking."""
+    cleaned = _REF_MARK_RE.sub("", text or "")
+    cleaned = _MD_LINK_RE.sub(r"\1", cleaned)
+    cleaned = _MD_HEADING_RE.sub("", cleaned)
+    cleaned = _MD_BOLD_RE.sub(r"\1", cleaned)
+    cleaned = _MD_ITALIC_RE.sub(r"\1", cleaned)
+    cleaned = _MD_CODE_RE.sub(r"\1", cleaned)
+    cleaned = _EDIT_RE.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def extract_article_from_html(html: str) -> str:
+    """Extract main article text with trafilatura (FR-24/28)."""
+    if not (html or "").strip():
+        return ""
+    try:
+        import trafilatura
+    except ImportError:
+        return ""
+    extracted = trafilatura.extract(
+        html,
+        include_comments=False,
+        include_tables=True,
+        favor_precision=True,
+    )
+    return (extracted or "").strip()
+
+
+def article_text_from_sources(html: str, markdown: str) -> str:
+    """Prefer trafilatura; fall back to de-menued markdown under 300 characters."""
+    extracted = extract_article_from_html(html)
+    if len(extracted) >= ARTICLE_MIN_CHARS:
+        return extracted
+    return filter_boilerplate(markdown or "")
 
 
 def _split_long_paragraph(paragraph: str) -> list[str]:
@@ -200,8 +299,8 @@ def _split_long_paragraph(paragraph: str) -> list[str]:
 
 
 def split_reading_chunks(text: str) -> list[str]:
-    """Split main_text into ~120-word chunks at paragraph boundaries (no LLM)."""
-    cleaned = filter_boilerplate(text)
+    """Split article text into ~120-word chunks at paragraph boundaries (no LLM)."""
+    cleaned = filter_boilerplate(strip_markdown_for_speech(text))
     if not cleaned.strip():
         return []
     chunks: list[str] = []
@@ -227,6 +326,15 @@ def split_reading_chunks(text: str) -> list[str]:
                     count = 0
     if current:
         chunks.append(" ".join(current))
+    return chunks
+
+
+def reading_chunks_for_capture(capture: PerceptionCapture) -> list[str]:
+    """Chunks for `read`, starting with the page title (FR-24)."""
+    chunks = split_reading_chunks(source_article_text(capture))
+    title = (capture.title or "").strip().rstrip(".")
+    if chunks and title:
+        chunks[0] = f"{title}. {chunks[0]}"
     return chunks
 
 
@@ -361,7 +469,7 @@ class PerceptionAgent:
         return await self._call(prompt, capture.screenshot_png)
 
     async def read(self, capture: PerceptionCapture, cursor: int = 0) -> PerceptionResult:
-        chunks = split_reading_chunks(capture.main_text)
+        chunks = reading_chunks_for_capture(capture)
         if not chunks:
             if is_unusable_capture(capture):
                 return PerceptionResult(text=EMPTY_PAGE_TEXT, uncertain=True)

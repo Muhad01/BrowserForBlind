@@ -23,6 +23,7 @@ dependencies = [
     "google-genai",
     "structlog",
     "pillow",
+    "trafilatura>=2.3.1",
 ]
 
 [project.optional-dependencies]

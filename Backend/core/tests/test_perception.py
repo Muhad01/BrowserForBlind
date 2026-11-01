@@ -1,4 +1,5 @@
 """Unit tests for PerceptionAgent, read chunking, and untrusted page text (FR-25..28)."""
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,13 +13,19 @@ from core.agent.perception import (
     PerceptionAgent,
     PerceptionResult,
     article_text_for_prompt,
+    article_text_from_sources,
+    extract_article_from_html,
     filter_boilerplate,
     is_unusable_capture,
     rank_paragraphs_for_question,
+    reading_chunks_for_capture,
     recency_instruction,
     split_reading_chunks,
+    strip_markdown_for_speech,
 )
 from core.agent.schema import PerceptionCapture
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class MockResponse:
@@ -209,6 +216,80 @@ def test_recency_instruction_includes_karachi_date():
     assert "Asia/Karachi" in text
     assert "date is unclear" in text
     assert recency_instruction("open wikipedia") == ""
+
+
+def _assert_spoken_chunks(chunks: list[str], first_sentence: str, forbidden: list[str]) -> None:
+    assert chunks
+    joined = " ".join(chunks)
+    assert first_sentence in chunks[0]
+    assert "#" not in joined
+    assert "*" not in joined
+    assert "[12]" not in joined
+    assert "[edit]" not in joined.lower()
+    for word in forbidden:
+        assert word.lower() not in joined.lower()
+
+
+def test_wikipedia_fixture_read_skips_menu_and_markdown():
+    html = (FIXTURES / "wikipedia_ai.html").read_text(encoding="utf-8")
+    article = extract_article_from_html(html)
+    assert "capability of computational systems" in article
+    capture = PerceptionCapture(
+        url="https://en.wikipedia.org/wiki/Artificial_intelligence",
+        title="Artificial intelligence",
+        article_text=article,
+        main_text="Main menu\n\nJump to content\n\n- [Main page](/wiki/Main_Page)\n\n# Artificial intelligence\n\nArtificial intelligence is the capability [12]",
+    )
+    chunks = reading_chunks_for_capture(capture)
+    _assert_spoken_chunks(
+        chunks,
+        "Artificial intelligence is the capability of computational systems",
+        ["Main menu", "Jump to content", "Random article"],
+    )
+    assert chunks[0].startswith("Artificial intelligence.")
+
+
+def test_news_fixture_read_skips_menu():
+    html = (FIXTURES / "news_library.html").read_text(encoding="utf-8")
+    article = extract_article_from_html(html)
+    capture = PerceptionCapture(
+        url="https://news.example/library",
+        title="City opens new central library",
+        article_text=article,
+        main_text="Home News Sport Culture Weather\n\nMain menu\n\nCity opens new central library",
+    )
+    chunks = reading_chunks_for_capture(capture)
+    _assert_spoken_chunks(
+        chunks,
+        "City council opened the new central library",
+        ["Main menu", "Accept all cookies", "Sign in"],
+    )
+
+
+def test_short_trafilatura_falls_back_to_filtered_markdown():
+    markdown = (
+        "Jump to content\n\nMain menu\n\n- [Home](/)\n- [News](/news)\n\n"
+        "The Dartmouth workshop founded the field of artificial intelligence in 1956.\n\n"
+        "Privacy policy | Cookie consent"
+    )
+    article = article_text_from_sources("<html><body><p>Hi</p></body></html>", markdown)
+    assert "1956" in article
+    assert "Main menu" not in article
+    assert "Jump to content" not in article
+
+
+def test_strip_markdown_and_references_before_speech():
+    text = "# Heading\n\nArtificial intelligence is *useful* and has sources [12] and a [link](http://example.com)."
+    cleaned = strip_markdown_for_speech(text)
+    chunks = split_reading_chunks(text)
+    joined = " ".join(chunks)
+    assert "Heading" in cleaned
+    assert "useful" in cleaned
+    assert "link" in cleaned
+    assert "#" not in joined
+    assert "*" not in joined
+    assert "[12]" not in joined
+    assert "http://example.com" not in joined
 
 
 def test_filter_boilerplate_keeps_article():

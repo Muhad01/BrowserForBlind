@@ -31,9 +31,9 @@ class ScriptedPerception:
 
     async def read(self, capture, cursor=0):
         self.calls.append(f"read:{cursor}")
-        from core.agent.perception import split_reading_chunks
+        from core.agent.perception import reading_chunks_for_capture
 
-        chunks = split_reading_chunks(capture.main_text)
+        chunks = reading_chunks_for_capture(capture)
         index = max(0, int(cursor))
         if index >= len(chunks):
             return PerceptionResult(text="There's nothing to continue.", has_more=False, cursor=len(chunks))
@@ -79,6 +79,7 @@ def _article_capture() -> PerceptionCapture:
         title="Artificial intelligence",
         screenshot_png=b"jpeg-bytes",
         main_text=body,
+        article_text=body,
         headings=["Artificial intelligence"],
         landmarks=["main", "nav"],
         link_count=40,
