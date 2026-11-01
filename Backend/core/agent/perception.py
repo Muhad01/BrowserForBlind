@@ -25,6 +25,7 @@ READ_MAX_WORDS = 140
 MODEL_FAILURE_TEXT = "I couldn't describe this page right now. Please try again."
 EMPTY_PAGE_TEXT = "This page looks empty or didn't load."
 NOT_ON_PAGE_TEXT = "I can't find that on this page."
+RECENCY_RE = re.compile(r"\b(today|latest|current|now)\b", re.IGNORECASE)
 
 _BOILERPLATE_RE = re.compile(
     r"(cookie|consent|accept all|reject all|privacy policy|terms of (use|service)|"
@@ -192,6 +193,20 @@ def split_reading_chunks(text: str) -> list[str]:
     return chunks
 
 
+def recency_instruction(question: str) -> str:
+    """Ask the model to flag missing dates for today/latest/current/now goals."""
+    if not RECENCY_RE.search(question or ""):
+        return ""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Karachi")).strftime("%Y-%m-%d")
+    return (
+        f"Today's date is {today} (Asia/Karachi). "
+        "If the page doesn't show a date for this information, say the date is unclear.\n"
+    )
+
+
 def _contents_for_capture(prompt: str, screenshot: bytes | None) -> Any:
     if not screenshot:
         return prompt
@@ -280,9 +295,11 @@ class PerceptionAgent:
     async def answer(self, capture: PerceptionCapture, question: str) -> PerceptionResult:
         if is_unusable_capture(capture):
             return PerceptionResult(text=EMPTY_PAGE_TEXT, uncertain=True)
+        recency = recency_instruction(question)
         prompt = (
             "Answer the user's question using only this page. At most 50 words. "
-            f'If the answer is not on the page, say "{NOT_ON_PAGE_TEXT}" and set uncertain=true.\n\n'
+            f'If the answer is not on the page, say "{NOT_ON_PAGE_TEXT}" and set uncertain=true.\n'
+            f"{recency}"
             f"QUESTION: {question}\n"
             f"URL: {capture.url}\n"
             f"Title: {capture.title}\n"

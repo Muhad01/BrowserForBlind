@@ -11,6 +11,7 @@ from core.agent.perception import (
     PerceptionResult,
     filter_boilerplate,
     is_unusable_capture,
+    recency_instruction,
     split_reading_chunks,
 )
 from core.agent.schema import PerceptionCapture
@@ -169,6 +170,13 @@ async def test_injection_text_does_not_change_output_format():
     assert result.text
     assert "<" not in result.text
     assert "hacked" not in result.text.lower()
+
+
+def test_recency_instruction_includes_karachi_date():
+    text = recency_instruction("Find the latest Pakistan cricket match result")
+    assert "Asia/Karachi" in text
+    assert "date is unclear" in text
+    assert recency_instruction("open wikipedia") == ""
 
 
 def test_filter_boilerplate_keeps_article():

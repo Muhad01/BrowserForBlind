@@ -91,6 +91,29 @@ PAGE_REF_RE = re.compile(
 )
 NAV_RE = re.compile(r"\b(search|find|go to|open|navigate|look up|look for)\b")
 
+INFO_PHRASES = (
+    "find out",
+    "tell me",
+    "how much",
+    "how many",
+    "is there",
+)
+INFO_WORDS = {
+    "what",
+    "whats",
+    "who",
+    "when",
+    "where",
+    "which",
+    "did",
+    "does",
+    "result",
+    "score",
+    "price",
+    "weather",
+    "news",
+}
+
 
 class CommandIntent(StrEnum):
     DESCRIBE = "describe"
@@ -176,6 +199,18 @@ def classify_command(text: str, previous_intent: str | None = None) -> CommandIn
 def classify_intent(text: str, previous_intent: str | None = None) -> CommandIntent:
     """Public classifier used by voice command handling (FR-24)."""
     return classify_command(text, previous_intent=previous_intent)
+
+
+def is_information_goal(goal: str) -> bool:
+    """True when the user asked to find a fact, not merely to open a page (FR-25)."""
+    normalized = normalize_command(goal)
+    if not normalized:
+        return False
+    if any(phrase in normalized for phrase in INFO_PHRASES):
+        return True
+    if normalized.startswith("find "):
+        return True
+    return bool(set(normalized.split()) & INFO_WORDS)
 
 
 def handle_voice_command(user: Any, text: str, request_id: str | None = None) -> dict[str, Any]:

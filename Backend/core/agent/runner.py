@@ -11,14 +11,16 @@ from core.agent.browser import BrowserGateway
 from core.agent.events import EventPublisher
 from core.agent.llm import HistoryItem, LLMBadOutput, LLMClient, LLMUnavailable, Proposal
 from core.agent.narration import (
+    format_grounded_stop,
     format_page_change,
     format_spoken_action,
     format_stop,
     format_task_cancelled,
     format_task_started,
     is_url_like,
+    with_source_attribution,
 )
-from core.agent.perception import PerceptionPort, PerceptionResult
+from core.agent.perception import NOT_ON_PAGE_TEXT, PerceptionPort, PerceptionResult
 from core.agent.safety import SafetyPolicy, SafetyVerdict
 from core.agent.schema import NormalizedAction
 from core.agent.validator import ActionValidator, ValidationFailure
@@ -50,6 +52,8 @@ class TaskRunner:
         self.publisher = publisher
         self.reopened_page = reopened_page
         self._last_perception_answer = ""
+        self._last_capture_url = ""
+        self._last_capture_title = ""
 
     async def run(self) -> None:
         """Execute the main agent loop (FR-10)."""
@@ -303,6 +307,25 @@ class TaskRunner:
 
                 # ALLOW: Proceed with action execution
                 if normalized.action == ActionType.STOP:
+                    if task.needs_grounded_answer:
+                        handled = await self._handle_grounded_stop(
+                            task=task,
+                            history=history,
+                            obs=obs,
+                            sequence=sequence,
+                            proposed=proposed,
+                            normalized=normalized,
+                            model_used=model_used,
+                            rule=rule,
+                        )
+                        if handled == "complete":
+                            return
+                        step_count += 1
+                        task.consecutive_failures = consecutive_failures
+                        task.step_count = step_count
+                        await task.asave(update_fields=["consecutive_failures", "step_count", "updated_at"])
+                        continue
+
                     repeats_perception = self._repeats_last_perception(normalized.value)
                     if repeats_perception:
                         self._silence_last_perception_event()
@@ -380,44 +403,15 @@ class TaskRunner:
                     return
 
                 if normalized.action == ActionType.DESCRIBE:
-                    spoken_msg = format_spoken_action(normalized, obs)
-                    await self.publisher.publish(task, "browser_action", {
-                        "speak": spoken_msg,
-                        "action": ActionType.DESCRIBE.value,
-                        "step": sequence,
-                    })
-                    capture = await self.browser.capture_for_perception()
-                    question = (normalized.value or "").strip()
-                    if question and hasattr(self.perception, "answer"):
-                        raw = await self.perception.answer(capture, question)
-                    else:
-                        raw = await self.perception.describe(capture)
-                    if isinstance(raw, PerceptionResult):
-                        result = raw
-                    else:
-                        result = PerceptionResult(text=str(raw))
-                    description = result.text
-                    self._last_perception_answer = description
-                    await self.publisher.publish(task, "perception_result", {
-                        "speak": "" if question else description,
-                        "text": description,
-                        "operation": "answer" if question else "describe",
-                        "uncertain": result.uncertain,
-                        "has_more": result.has_more,
-                        "model": result.model,
-                    })
-                    await AgentAction.objects.acreate(
+                    description = await self._run_describe_answer(
                         task=task,
                         sequence=sequence,
-                        action_type=ActionType.DESCRIBE,
-                        raw_action=proposed.action[:64],
-                        target="",
-                        value=description[:500],
-                        reason=normalized.reason,
-                        safety_decision=SafetyDecision.ALLOW,
-                        safety_rule=rule,
-                        status=ActionStatus.EXECUTED,
+                        question=(normalized.value or "").strip(),
+                        obs=obs,
                         model_used=model_used,
+                        rule=rule,
+                        raw_action=proposed.action,
+                        reason=normalized.reason,
                     )
                     consecutive_failures = 0
                     history.append(HistoryItem(sequence=sequence, action="describe", result=f"observed: {description}"))
@@ -537,6 +531,179 @@ class TaskRunner:
             )
         except Exception as err:
             logger.error("Error inside _fail_task suppressed", task_id=str(task.id), error=str(err))
+
+    async def _handle_grounded_stop(
+        self,
+        *,
+        task: AgentTask,
+        history: list,
+        obs,
+        sequence: int,
+        proposed,
+        normalized: NormalizedAction,
+        model_used: str,
+        rule: str,
+    ) -> str:
+        """Force a page-grounded answer for information goals. Returns complete|continue."""
+        current_url = obs.url if obs else ""
+        recent = self._recent_perception_answers(history, 3)
+        usable = [text for text in recent if not self._is_missing_on_page(text)]
+        same_page = bool(self._last_capture_url) and self._last_capture_url == current_url
+        if usable and same_page:
+            await self._record_stop_action(
+                task, sequence, proposed, usable[-1], rule, model_used, executed=True
+            )
+            await self._complete_grounded(task, usable[-1], current_url, obs.title if obs else "")
+            return "complete"
+
+        if recent and all(self._is_missing_on_page(text) for text in recent) and same_page:
+            await self._record_stop_action(
+                task, sequence, proposed, "", rule, model_used, executed=False
+            )
+            history.append(
+                HistoryItem(
+                    sequence=sequence,
+                    action="stop",
+                    result="skipped: answer not on this page yet",
+                )
+            )
+            return "continue"
+
+        description = await self._run_describe_answer(
+            task=task,
+            sequence=sequence,
+            question=task.goal,
+            obs=obs,
+            model_used=model_used,
+            rule=rule,
+            raw_action="describe",
+            reason="Ground the answer in the current page.",
+        )
+        history.append(HistoryItem(sequence=sequence, action="describe", result=f"observed: {description}"))
+        if self._is_missing_on_page(description):
+            return "continue"
+        capture_url = self._last_capture_url or current_url
+        capture_title = self._last_capture_title or (obs.title if obs else "")
+        await self._complete_grounded(task, description, capture_url, capture_title)
+        return "complete"
+
+    async def _run_describe_answer(
+        self,
+        *,
+        task: AgentTask,
+        sequence: int,
+        question: str,
+        obs,
+        model_used: str,
+        rule: str,
+        raw_action: str,
+        reason: str,
+    ) -> str:
+        spoken_msg = format_spoken_action(
+            NormalizedAction(action=ActionType.DESCRIBE, value=question, reason=reason),
+            obs,
+        )
+        await self.publisher.publish(task, "browser_action", {
+            "speak": spoken_msg,
+            "action": ActionType.DESCRIBE.value,
+            "step": sequence,
+        })
+        capture = await self.browser.capture_for_perception()
+        self._last_capture_url = capture.url
+        self._last_capture_title = capture.title
+        if question and hasattr(self.perception, "answer"):
+            raw = await self.perception.answer(capture, question)
+        else:
+            raw = await self.perception.describe(capture)
+        if isinstance(raw, PerceptionResult):
+            result = raw
+        else:
+            result = PerceptionResult(text=str(raw))
+        description = result.text
+        self._last_perception_answer = description
+        await self.publisher.publish(task, "perception_result", {
+            "speak": "",
+            "text": description,
+            "operation": "answer" if question else "describe",
+            "uncertain": result.uncertain,
+            "has_more": result.has_more,
+            "model": result.model,
+        })
+        await AgentAction.objects.acreate(
+            task=task,
+            sequence=sequence,
+            action_type=ActionType.DESCRIBE,
+            raw_action=(raw_action or "describe")[:64],
+            target="",
+            value=description[:500],
+            reason=reason,
+            safety_decision=SafetyDecision.ALLOW,
+            safety_rule=rule,
+            status=ActionStatus.EXECUTED,
+            model_used=model_used,
+        )
+        return description
+
+    async def _record_stop_action(
+        self,
+        task: AgentTask,
+        sequence: int,
+        proposed,
+        stored_value: str,
+        rule: str,
+        model_used: str,
+        *,
+        executed: bool,
+    ) -> None:
+        await AgentAction.objects.acreate(
+            task=task,
+            sequence=sequence,
+            action_type=ActionType.STOP,
+            raw_action=proposed.action[:64],
+            target="",
+            value=(stored_value or "")[:500],
+            reason=proposed.reason,
+            safety_decision=SafetyDecision.ALLOW,
+            safety_rule=rule,
+            status=ActionStatus.EXECUTED if executed else ActionStatus.SKIPPED,
+            model_used=model_used,
+        )
+
+    async def _complete_grounded(self, task: AgentTask, answer: str, url: str, title: str) -> None:
+        grounded = with_source_attribution(answer, url)
+        self._silence_last_perception_event()
+        await task.arefresh_from_db()
+        if task.status in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }:
+            return
+        task.result_text = grounded
+        task.final_url = url or ""
+        await task.asave(update_fields=["result_text", "final_url", "updated_at"])
+        await sync_to_async(task.transition_to)(TaskStatus.COMPLETED)
+        await self.publisher.publish(task, "task_completed", {
+            "speak": format_grounded_stop(grounded),
+            "result": grounded,
+            "final_url": url or "",
+            "final_title": title or "",
+        })
+
+    def _recent_perception_answers(self, history: list, last_n: int) -> list[str]:
+        answers: list[str] = []
+        for item in history[-last_n:]:
+            result = (item.result or "").strip()
+            action = (item.action or "").strip().lower()
+            if action == "describe" or result.startswith("observed:"):
+                text = result[9:].strip() if result.lower().startswith("observed:") else result
+                if text:
+                    answers.append(text)
+        return answers
+
+    def _is_missing_on_page(self, text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        return NOT_ON_PAGE_TEXT.lower() in lowered or "can't find that on this page" in lowered
 
     def _repeats_last_perception(self, stop_value: str) -> bool:
         answer = (self._last_perception_answer or "").strip()

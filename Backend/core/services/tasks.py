@@ -41,6 +41,8 @@ def create_task(
     if has_active_task:
         raise ValidationError("Session currently has an active task running or awaiting confirmation.")
 
+    from core.services.commands import is_information_goal
+
     with transaction.atomic():
         task = AgentTask.objects.create(
             user=user,
@@ -48,6 +50,7 @@ def create_task(
             goal=goal,
             mode=mode,
             status=TaskStatus.PENDING,
+            needs_grounded_answer=bool(mode == TaskMode.TASK and is_information_goal(goal)),
         )
 
         if dispatch:

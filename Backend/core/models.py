@@ -186,6 +186,7 @@ class AgentTask(BaseModel):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     final_url = models.CharField(max_length=2048, blank=True)
+    needs_grounded_answer = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = "Agent Task"

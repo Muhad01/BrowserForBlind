@@ -289,6 +289,38 @@ def format_stop(result: str, title: str = "") -> str:
     return ensure_under_n_words(spoken, 30)
 
 
+def source_host(url: str) -> str:
+    """Hostname for spoken source attribution (strip www)."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url or "").hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def with_source_attribution(text: str, url: str) -> str:
+    """Append 'Source: host.' in at most six extra words (FR-25)."""
+    body = (text or "").strip()
+    host = source_host(url)
+    if not body:
+        return f"Source: {host}." if host else ""
+    if "source:" in body.lower() or not host:
+        return body
+    trimmed = body.rstrip(" .")
+    return f"{trimmed}. Source: {host}."
+
+
+def format_grounded_stop(result: str) -> str:
+    """Speak a page-grounded result without truncating the source host."""
+    body = (result or "").strip()
+    if not body:
+        return "Done."
+    if body.lower().startswith("done."):
+        return body
+    return f"Done. {body}"
+
+
 def page_changed(new_title: str, url: str = "") -> str:
     """Format page transition without ever speaking a URL path (NFR-ACC-02)."""
     title = (new_title or "").strip()

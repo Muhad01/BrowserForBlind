@@ -624,3 +624,126 @@ async def test_runner_describe_question_then_stop_no_double_speech(runner_task):
     assert len(spoken_answers) == 1
 
 
+class _ScriptedPerception:
+    def __init__(self, answers: list[str]):
+        self.answers = list(answers)
+        self.questions: list[str] = []
+
+    async def describe(self, capture):
+        return PerceptionResult(text="Overview.", model="fake")
+
+    async def answer(self, capture, question):
+        self.questions.append(question)
+        text = self.answers.pop(0) if self.answers else "I can't find that on this page."
+        return PerceptionResult(text=text, model="fake")
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_information_goal_stop_forces_describe(runner_task):
+    runner_task.goal = "Find the latest Pakistan cricket match result"
+    runner_task.needs_grounded_answer = True
+    await runner_task.asave(update_fields=["goal", "needs_grounded_answer", "updated_at"])
+    obs = PageObservation(
+        url="https://www.bing.com/search?q=pakistan+cricket",
+        title="Pakistan cricket - Search",
+        element_indexes={1},
+    )
+    capture = PerceptionCapture(
+        url=obs.url,
+        title=obs.title,
+        main_text="Pakistan won by 3 wickets in the ODI tri-series final.",
+        headings=["Search results"],
+        screenshot_png=b"jpeg",
+    )
+    browser = FakeBrowserGateway(pages=[obs, obs], captures=[capture])
+    llm = FakeLLMClient([ProposedAction(action="stop", value="I reached the page.", reason="Done")])
+    perception = _ScriptedPerception(["Pakistan won by 3 wickets."])
+    publisher = RecordingPublisher()
+    runner = TaskRunner(runner_task.id, llm, browser, PlaceholderSafetyPolicy(), perception, publisher)
+    await runner.run()
+    await runner_task.arefresh_from_db()
+    assert runner_task.status == TaskStatus.COMPLETED
+    assert runner_task.result_text.startswith("Pakistan won by 3 wickets.")
+    assert "I reached the page" not in runner_task.result_text
+    assert "Source: bing.com" in runner_task.result_text
+    assert runner_task.final_url == obs.url
+    assert perception.questions == [runner_task.goal]
+    completed = [e for e in publisher.events if e["event"] == "task_completed"]
+    assert completed
+    assert "Source: bing.com" in completed[0]["payload"]["speak"]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_non_information_goal_stop_unaffected(runner_task):
+    runner_task.goal = "open wikipedia"
+    runner_task.needs_grounded_answer = False
+    await runner_task.asave(update_fields=["goal", "needs_grounded_answer", "updated_at"])
+    obs = PageObservation(url="https://en.wikipedia.org", title="Wikipedia")
+    browser = FakeBrowserGateway(pages=[obs, obs])
+    llm = FakeLLMClient([ProposedAction(action="stop", value="Opened Wikipedia.", reason="Done")])
+    perception = _ScriptedPerception(["should not run"])
+    publisher = RecordingPublisher()
+    runner = TaskRunner(runner_task.id, llm, browser, PlaceholderSafetyPolicy(), perception, publisher)
+    await runner.run()
+    await runner_task.arefresh_from_db()
+    assert runner_task.status == TaskStatus.COMPLETED
+    assert runner_task.result_text == "Opened Wikipedia."
+    assert perception.questions == []
+    assert not [e for e in publisher.events if e["event"] == "perception_result"]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_grounded_cant_find_lets_agent_continue(runner_task):
+    runner_task.goal = "What is the score"
+    runner_task.needs_grounded_answer = True
+    await runner_task.asave(update_fields=["goal", "needs_grounded_answer", "updated_at"])
+    search = PageObservation(
+        url="https://www.bing.com/search?q=score",
+        title="Search",
+        element_indexes={1},
+        element_meta={1: ElementMeta(tag="a", text="Full scorecard")},
+    )
+    result_page = PageObservation(
+        url="https://www.espncricinfo.com/series/final",
+        title="Scorecard",
+        element_indexes={1},
+        element_meta={1: ElementMeta(tag="a", text="Full scorecard")},
+    )
+    capture_empty = PerceptionCapture(url=search.url, title=search.title, main_text="Sponsored links")
+    capture_hit = PerceptionCapture(
+        url=result_page.url,
+        title=result_page.title,
+        main_text="Pakistan won by 3 wickets.",
+        screenshot_png=b"jpeg",
+    )
+    browser = FakeBrowserGateway(
+        pages=[search, search, result_page, result_page],
+        captures=[capture_empty, capture_hit],
+    )
+    llm = FakeLLMClient([
+        ProposedAction(action="stop", value="I reached the search page.", reason="Done"),
+        ProposedAction(action="click", target="1", reason="Open the scorecard"),
+        ProposedAction(action="stop", value="Opened the scorecard.", reason="Done"),
+    ])
+    perception = _ScriptedPerception([
+        "I can't find that on this page.",
+        "Pakistan won by 3 wickets.",
+    ])
+    publisher = RecordingPublisher()
+    runner = TaskRunner(runner_task.id, llm, browser, PlaceholderSafetyPolicy(), perception, publisher)
+    await runner.run()
+    await runner_task.arefresh_from_db()
+    actions = [a.action_type async for a in AgentAction.objects.filter(task=runner_task).order_by("sequence")]
+    # Force-describe, then click, then grounded complete (second describe on stop).
+    assert ActionType.CLICK in actions or "click" in actions
+    assert runner_task.status == TaskStatus.COMPLETED
+    assert "Pakistan won by 3 wickets" in runner_task.result_text
+    assert "Source: espncricinfo.com" in runner_task.result_text
+    assert "I reached the search page" not in runner_task.result_text
+    assert "Opened the scorecard" not in runner_task.result_text
+    assert len(perception.questions) == 2
+
+

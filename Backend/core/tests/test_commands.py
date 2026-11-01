@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 
 from core.enums import TaskMode, TaskStatus
-from core.services.commands import CommandIntent, classify_command, handle_voice_command
+from core.services.commands import CommandIntent, classify_command, handle_voice_command, is_information_goal
 from core.services.tasks import create_task
 
 User = get_user_model()
@@ -60,6 +60,40 @@ def test_classify_command_phrases(text, previous, expected):
 
 def test_classifier_has_at_least_thirty_cases():
     assert len(CASES) >= 30
+
+
+INFO_GOAL_CASES = [
+    ("Find the latest Pakistan cricket match result", True),
+    ("find out who won", True),
+    ("tell me the score", True),
+    ("what is the weather in Karachi", True),
+    ("who won the match", True),
+    ("when is the next game", True),
+    ("how much does it cost", True),
+    ("how many wickets fell", True),
+    ("is there a winner", True),
+    ("did Pakistan win", True),
+    ("does it mention the price", True),
+    ("today's news headline", True),
+    ("open wikipedia", False),
+    ("Search Wikipedia for artificial intelligence", False),
+    ("go to google", False),
+    ("navigate to bbc.com", False),
+]
+
+
+@pytest.mark.parametrize("text,expected", INFO_GOAL_CASES)
+def test_is_information_goal(text, expected):
+    assert is_information_goal(text) is expected
+
+
+@pytest.mark.django_db
+def test_create_task_sets_needs_grounded_answer(db):
+    user = User.objects.create_user(username="infouser", password="pwd")
+    info = create_task(user, goal="Find the latest Pakistan cricket match result", dispatch=False)
+    assert info.needs_grounded_answer is True
+    nav = create_task(user, goal="open wikipedia", dispatch=False)
+    assert nav.needs_grounded_answer is False
 
 
 @pytest.mark.django_db
